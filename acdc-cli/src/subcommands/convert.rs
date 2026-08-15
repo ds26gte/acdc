@@ -43,6 +43,16 @@ pub struct Args {
     #[arg(conflicts_with = "stdin", required_unless_present = "stdin")]
     pub files: Vec<PathBuf>,
 
+    /// Base directory for resolving relative include and image targets
+    ///
+    /// Matches asciidoctor's -B/--base-dir: overrides the entry file's
+    /// parent directory as the root that relative `include::` and
+    /// `image::` targets are resolved against. Nested includes still
+    /// resolve relative to the file that contains them. Defaults to each
+    /// entry file's own parent directory when not given.
+    #[arg(short = 'B', long = "base-dir", value_name = "DIR")]
+    pub base_dir: Option<PathBuf>,
+
     /// Backend output format
     ///
     /// `html` is the default when its feature is compiled in; otherwise
@@ -1402,6 +1412,10 @@ fn build_parser_options(
     let mut builder = acdc_parser::Options::builder()
         .with_safe_mode(base_options.safe_mode())
         .with_attributes(document_attributes);
+
+    if let Some(base_dir) = &args.base_dir {
+        builder = builder.with_base_dir(base_dir);
+    }
 
     if base_options.timings() {
         builder = builder.with_timings();

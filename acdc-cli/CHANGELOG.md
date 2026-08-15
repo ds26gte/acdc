@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `convert` accepts a `-B`/`--base-dir <DIR>` flag, matching asciidoctor's
+  `-B`/`--base-dir`. It overrides the entry file's parent directory as the
+  root that relative `include::` and `image::` targets are resolved
+  against — needed for document trees that write those paths relative to a
+  shared project root rather than each file's own location. Nested includes
+  still resolve relative to the file that contains them.
 - A new `lint` command is available by default. It accepts files or `--stdin`
   and Clippy-style lint level flags (`--allow`/`-A`, `--warn`/`-W`,
   `--deny`/`-D`, `--forbid`/`-F`) for the initial Asciidoctor recommended

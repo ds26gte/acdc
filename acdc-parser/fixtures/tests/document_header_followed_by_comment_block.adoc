@@ -1,0 +1,8 @@
+= Test
+
+////
+This comment block is the first thing after the header, with no
+intervening paragraph.
+////
+
+Some text after the block.

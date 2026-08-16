@@ -172,6 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `////`+ comment-block delimiter that immediately follows the document
+  header (title/author/revision lines), with no other block in between, is
+  no longer mistaken for a one-line `//` comment while skipping header
+  trivia. Previously this swallowed just the opening delimiter, leaving the
+  block's content to be parsed as a stray paragraph and its closing
+  delimiter to be reported as an unterminated new block.
 - A description list's wrapped-term scan no longer crosses into a following
   delimited block. Previously, a `::`/`;;` marker inside a *later* block (for
   example a fenced code sample containing a type-annotation comment like

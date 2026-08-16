@@ -5669,7 +5669,15 @@ peg::parser! {
         rule eol() = quiet!{ "\n" }
 
         rule comment_line() = quiet!{ comment() (eol() / ![_]) }
-        rule comment() = quiet!{ "//" [^'\n']+ (&eol() / ![_]) }
+        // `!("/")` excludes a 3rd+ slash so a `////`+ comment-block delimiter is never
+        // mistaken for a one-line `//` comment here. All five call sites of this rule
+        // live in document-header trivia (before the title, between title and authors,
+        // between author and revision lines, after title/authors before the body): none
+        // of them consume a full delimited block, so swallowing just a `////` opening
+        // line would strand its content and closing delimiter for the body parser to
+        // misread as a fresh, unterminated block. Mirrors the same guard already used
+        // by `comment_line_block` below for identical reasons.
+        rule comment() = quiet!{ "//" !("/") [^'\n']+ (&eol() / ![_]) }
 
         // Value parsing for document attributes
         // Handles both single-line values and values with continuation markers (" \" or " + \")

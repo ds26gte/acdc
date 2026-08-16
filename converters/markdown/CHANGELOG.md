@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Ordered lists honor a positive `start` value, including on nested lists.
+  Every line of a nested list remains indented. Unsupported alphabetic and
+  Roman styles continue to produce a warning and use numeric markers.
 - Markdown conversion attributes now include the `markdown` backend and
   base-backend, `md` file type, `.md` output suffix, and their conditional
   convenience attributes.
@@ -41,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Unindented ordered and unordered markers now render as nested mixed lists,
+  matching Asciidoctor's list ownership.
 - Brackets in block attribute values no longer make the attribute line leak
   into Markdown output.
 - **Inline markup in `link:` text** — link text with nested formatting is now rendered

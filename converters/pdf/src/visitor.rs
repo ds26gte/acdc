@@ -301,11 +301,14 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
     fn visit_ordered_list(&mut self, list: &OrderedList<'_>) -> Result<(), Self::Error> {
         self.write_block_anchor(&list.metadata);
         self.write_block_title(&list.title)?;
+        self.write_ordered_list_start(&list.metadata, list.marker);
         self.list_depth += 1;
         for item in &list.items {
             self.write_list_item("+", item)?;
         }
         self.list_depth -= 1;
+        let indent = "  ".repeat(self.list_depth);
+        let _ = writeln!(self.writer, "{indent}]");
         self.writer.raw("\n");
         Ok(())
     }
@@ -324,7 +327,16 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
 
     fn visit_description_list(&mut self, list: &DescriptionList<'_>) -> Result<(), Self::Error> {
         self.write_block_anchor(&list.metadata);
+        if matches!(list.metadata.style, Some("ordered" | "unordered")) {
+            return self.write_marker_description_list(list);
+        }
         self.write_block_title(&list.title)?;
+        if list.metadata.style == Some("horizontal") {
+            return self.write_horizontal_description_list(list);
+        }
+        if list.metadata.style == Some("qanda") {
+            return self.write_qanda_description_list(list);
+        }
         for item in &list.items {
             for anchor in &item.anchors {
                 self.write_anchor_target(anchor);

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Ordered lists honor a positive `start` value, including on nested lists.
+  Standard HTML also keeps roles on unordered-list wrappers, matching
+  Asciidoctor.
 - Tables honor source-order changes to `table-frame`, `table-grid`, and
   `table-stripes`. Local `frame`, `grid`, and `stripes` values still override
   the document defaults, including `stripes=hover`, matching Asciidoctor.
@@ -246,6 +249,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Image links now honor `window`, `nofollow`, and `noopener`, including the
+  implicit `noopener` relation for `window=_blank`, matching Asciidoctor.
+- `[listing]`, `[source]`, `[literal]`, and `[verse]` before a block image
+  macro now render the macro text in that block style instead of expanding an
+  image, matching Asciidoctor.
 - Book abstracts now take chapter numbers, `sectnums=all` includes special
   sections, and ordinary section numbering continues after an appendix,
   matching Asciidoctor.

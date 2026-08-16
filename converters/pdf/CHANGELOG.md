@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tagged PDFs now include explicit or filename-derived alternative text for
+  embedded block and inline images. Asciidoctor PDF 2.3.15 does not emit tagged
+  PDF structure.
 - With source highlighting enabled, source blocks honor `linenums`, `start`,
   and `highlight`, including source paragraphs, blocks without a language,
   callouts, and wrapped lines. PDF continues to ignore HTML-only wrapping
@@ -32,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `[ordered]` and `[unordered]` description lists now render as numbered or
+  bulleted lists. Terms are bold, punctuation and stacked answers are
+  preserved, and attached content stays with its item, matching Asciidoctor
+  PDF.
+- `[qanda]` description lists now render numbered, italic questions with
+  answers beneath them. Shared questions, attached content, nested Q&A lists,
+  alignment roles, and numbering restarts match Asciidoctor PDF.
+- Horizontal description lists now render terms and descriptions in a
+  borderless two-column layout. The term column fits its content up to half
+  the available width, and multiple terms and attached blocks stay with their
+  description, matching Asciidoctor PDF.
+- Block images without an explicit width now keep their intrinsic size instead
+  of expanding to the page width. Oversized images still fit the available
+  area, matching Asciidoctor PDF.
 - Wide table cells now wrap long uninterrupted text, monospace and literal
   content, and nested source blocks instead of clipping or overlapping nearby
   cells, matching `asciidoctor-pdf`.
@@ -123,15 +140,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emit a warning for each affected image. Following text starts below the image
   because Typst does not yet support side wrapping.
 - Block and inline images now honor `link=`, including missing-image fallback
-  text. Block-image captions remain outside the link, matching Asciidoctor PDF.
-  Empty link targets are ignored because Typst does not accept them.
+  text. Block-image captions remain outside the link, and an inline image's own
+  link takes precedence over an enclosing link, matching Asciidoctor PDF. Empty
+  link targets are ignored because Typst does not accept them.
 - Titled block images now render as numbered figure captions below the image,
   including linked and missing images. Missing images show their alt text and
   source target. Untitled and inline images do not consume a figure number,
   matching Asciidoctor PDF.
+- Captioned block images now stay with their captions across page breaks,
+  matching Asciidoctor PDF.
 - Figure captions honor custom, empty, and unset `figure-caption` values,
   document-level `caption`, and per-image `caption=` overrides. Disabled and
   explicit prefixes do not consume a figure number.
+- Ordered lists honor explicit `arabic`, `decimal`, `loweralpha`, `upperalpha`,
+  `lowerroman`, `upperroman`, and `lowergreek` numbering styles, matching
+  Asciidoctor PDF.
+- Unstyled nested ordered lists use Arabic, lower-alpha, lower-Roman,
+  upper-alpha, and upper-Roman numbering through level five, then Arabic at
+  deeper levels. Explicit parent styles do not affect their children, matching
+  Asciidoctor PDF.
+- Ordered lists honor positive `start` values across all supported numbering
+  styles. Nested lists keep style and start attributes placed directly before
+  their first item, matching Asciidoctor PDF.
 - Named footnote references reuse the original footnote and its assigned number.
 - Inline IDs such as `[#term]*Term*` now create PDF link targets on formatted
   text.
@@ -226,3 +256,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching `asciidoctor-pdf`.
 - Section headings and table-of-contents entries now use one source-order number
   assigned by the parser, including parts, appendices, and special sections.
+
+### Fixed
+
+- Checklist-like prefixes in ordered lists now remain visible text instead of
+  rendering as checkboxes, matching Asciidoctor PDF. ACDC continues to accept
+  `[X]` in unordered checklists as an intentional extension.
+- Unindented ordered, unordered, and checklist items now retain their automatic
+  mixed-list nesting, matching `asciidoctor-pdf`.
+- `[listing]`, `[source]`, `[literal]`, and `[verse]` before a block image
+  macro now render the macro text in that block style instead of expanding an
+  image, matching Asciidoctor PDF. Listing and figure counters remain separate.

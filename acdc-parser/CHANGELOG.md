@@ -254,6 +254,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its closing delimiter to be reported as an unterminated new block. Most
   likely to surface when a paragraph is immediately followed (no blank line)
   by a delimited block.
+- Image macros now accept an empty inline `link=` value and use the last value
+  when `link=` appears more than once, matching Asciidoctor.
+- Checklist markers now apply only to unordered list items. `[ ]`, `[x]`,
+  `[X]`, and `[*]` remain visible text in ordered items, matching Asciidoctor.
+  ACDC continues to accept `[X]` in unordered checklists as an intentional
+  extension.
+- Unindented ordered and unordered markers now nest automatically when the
+  marker type changes, while metadata after a blank line still starts a new
+  list, matching Asciidoctor.
+- Block attributes and anchors directly before an automatically nested list now
+  apply to that child list instead of appearing in the parent item text,
+  matching Asciidoctor.
+- A block image macro preceded by `[listing]`, `[source]`, `[literal]`, or
+  `[verse]` is parsed as that styled paragraph and kept as text instead of
+  becoming an image, matching Asciidoctor.
 - Path-based macros now recognize non-ASCII local targets, including cross-references,
   links, icons, images, audio, and video, matching Asciidoctor.
 - Table cell specifiers now accept the Asciidoctor order with spans or repeats

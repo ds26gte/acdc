@@ -47,9 +47,9 @@
 #let callout(kind, body) = pad(left: 0pt, block(width: 100%, inset: (x: 12pt, y: 4pt), grid(columns: (auto, 1fr), column-gutter: 12pt, align: (x, _) => if x == 0 { center + horizon } else { left + top }, text(fill: rgb("#111111"), weight: 700, upper(kind)), grid.cell(stroke: (left: 0.75pt + rgb("#e5e7eb")), inset: (left: 12pt), body))))
 #let checkbox(checked) = box(height: 0.85em, width: 0.85em, baseline: 0.15em, radius: 2pt, stroke: 0.75pt + rgb("#9ca3af"), fill: if checked { rgb("#374151") } else { white })
 #let hr() = block(above: 1.2em, below: 1.2em, line(length: 100%, stroke: 0.75pt + rgb("#e5e7eb")))
-#let docimage(path, width: none, ratio: none, destination: none) = block(width: 100%, radius: 4pt, clip: true, layout(size => {
-  let resolved-width = if ratio != none { ratio * size.width } else if width != none { calc.min(width, size.width) } else { size.width }
-  let content = image(path, width: resolved-width)
+#let docimage(path, alt: none, width: none, ratio: none, destination: none) = block(width: 100%, radius: 4pt, clip: true, layout(size => {
+  let resolved-width = if ratio != none { ratio * size.width } else if width != none { calc.min(width, size.width) } else { auto }
+  let content = image(path, alt: alt, width: resolved-width)
   if destination == none { content } else { link(destination, content) }
 }))
 #set list(marker: (box(baseline: -0.2em, circle(radius: 0.14em, fill: rgb("#6b7280"))), box(baseline: -0.2em, circle(radius: 0.13em, stroke: 0.6pt + rgb("#6b7280"))), box(baseline: -0.2em, rect(width: 0.24em, height: 0.24em, fill: rgb("#6b7280")))))
@@ -143,7 +143,10 @@
 
 #metadata(none) <id-6f7264657265642d6964>
 #blocktitle[#text("Ordered List Title")]
+#[
+#set enum(numbering: (..numbers) => text(fill: rgb("#9ca3af"), numbering("1.", ..numbers.pos())))
   + #text("ordered")
+]
 
 #metadata(none) <id-756e6f7264657265642d6964>
 #blocktitle[#text("Unordered List Title")]
@@ -170,8 +173,10 @@
 ]
 
 #metadata(none) <id-696d6167652d6964>
+#block(width: 100%, breakable: false)[
 #text("[Missing image]")#text(" | missing.png")
 #imagecaption[#text("Figure 1. ")#text("Image Title")]
+]
 
 #metadata(none) <id-766964656f2d6964>
 #blocktitle[#text("Video Title")]

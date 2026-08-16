@@ -6,6 +6,7 @@ use acdc_converters_core::{
     Diagnostics, Doctype, InlineTextTransform,
     code::{SourceLineOptions, detect_language, source_line_count},
     inlines_to_string,
+    list::OrderedListNumbering,
     section::effective_section_level,
     substitutions::{Replacements, TextBoundaries},
     table::{CellKind, GridRow, build_grid, determine_column_count},
@@ -15,9 +16,10 @@ use acdc_converters_core::{
 };
 use acdc_parser::{
     Anchor, AttributeValue, Block, BlockMetadata, Caption, CaptionKind, ColumnStyle, ColumnWidth,
-    CrossReference, HorizontalAlignment, Image, IndexTermKind, InlineMacro, InlineNode, ListItem,
-    Paragraph, Section, SectionKind, Source, Table, TableColumn, TableFrame, TableGrid,
-    TableOfContents, TablePresentation, TableStripes, Title, TocEntry, VerticalAlignment,
+    CrossReference, DescriptionList, DescriptionListItem, HorizontalAlignment, Image,
+    IndexTermKind, InlineMacro, InlineNode, ListItem, Paragraph, Section, SectionKind, Source,
+    Table, TableColumn, TableFrame, TableGrid, TableOfContents, TablePresentation, TableStripes,
+    Title, TocEntry, VerticalAlignment,
 };
 use acdc_pdf_images::ImageMap;
 use acdc_pdf_theme::{
@@ -1161,6 +1163,258 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         Ok(())
     }
 
+    pub(crate) fn write_horizontal_description_list(
+        &mut self,
+        list: &DescriptionList<'_>,
+    ) -> Result<(), Error> {
+        if list.items.is_empty() {
+            return Ok(());
+        }
+
+        self.writer
+            .raw("#layout(size => {\nlet term-width = calc.min(calc.max(0pt,\n");
+        for row in description_list_rows(&list.items) {
+            self.writer.raw("measure([");
+            self.write_horizontal_description_terms(row, false)?;
+            self.writer.raw("]).width,\n");
+        }
+        self.writer.raw(
+            "), size.width * 50%)\ngrid(columns: (term-width, 1fr), column-gutter: 20pt, row-gutter: 0.5em, align: top,\n",
+        );
+
+        for row in description_list_rows(&list.items) {
+            let Some(item) = row.last() else {
+                continue;
+            };
+            self.writer.raw("[");
+            self.write_horizontal_description_terms(row, true)?;
+            self.writer.raw("], [");
+            self.write_description_list_item(item)?;
+            self.writer.raw("],\n");
+        }
+
+        self.writer.raw(")\n})\n\n");
+        Ok(())
+    }
+
+    pub(crate) fn write_qanda_description_list(
+        &mut self,
+        list: &DescriptionList<'_>,
+    ) -> Result<(), Error> {
+        if list.items.is_empty() {
+            return Ok(());
+        }
+
+        let indent = "  ".repeat(self.list_depth);
+        let _ = writeln!(self.writer, "{indent}#[");
+        let _ = write!(self.writer, "{indent}#set enum(numbering: ");
+        self.write_ordered_list_numbering(OrderedListNumbering::Arabic);
+        self.writer.raw(", spacing: 1em)\n");
+
+        for row in description_list_rows(&list.items) {
+            let Some(answer) = row.last() else {
+                continue;
+            };
+            let _ = write!(self.writer, "{indent}  + #block(width: 100%)[");
+            self.writer.raw("#block(width: 100%, breakable: false)[");
+            self.write_paragraph_alignment(&list.metadata, |visitor| {
+                visitor.write_qanda_description_terms(row)?;
+                if !answer.principal_text.is_empty() {
+                    visitor.writer.raw("#linebreak()\n");
+                    visitor.write_inlines(&answer.principal_text)?;
+                }
+                Ok(())
+            })?;
+            self.writer.raw("]");
+            if !answer.description.is_empty() {
+                self.writer.raw("\n\n");
+                self.write_blocks(&answer.description)?;
+            }
+            self.writer.raw("]\n");
+        }
+
+        let _ = writeln!(self.writer, "{indent}]\n");
+        Ok(())
+    }
+
+    pub(crate) fn write_marker_description_list(
+        &mut self,
+        list: &DescriptionList<'_>,
+    ) -> Result<(), Error> {
+        if list.items.is_empty() {
+            return Ok(());
+        }
+
+        let ordered = list.metadata.style == Some("ordered");
+        let stacked = list.metadata.roles.contains(&"stack");
+        let subject_stop = list.metadata.attributes.get_string("subject-stop");
+        let indent = "  ".repeat(self.list_depth);
+        let _ = writeln!(self.writer, "{indent}#[");
+        if ordered {
+            let _ = write!(self.writer, "{indent}#set enum(numbering: ");
+            self.write_ordered_list_numbering(OrderedListNumbering::Arabic);
+            self.writer.raw(")\n");
+        } else {
+            let _ = write!(
+                self.writer,
+                "{indent}#set list(marker: box(baseline: -0.2em, circle(radius: 0.14em, fill: rgb("
+            );
+            self.writer.string_literal(&self.palette.bullet);
+            self.writer.raw("))))\n");
+        }
+
+        for row in description_list_rows(&list.items) {
+            let Some(subject) = row.first() else {
+                continue;
+            };
+            let Some(description) = row.last() else {
+                continue;
+            };
+            let marker = if ordered { "+" } else { "-" };
+            let _ = write!(self.writer, "{indent}  {marker} #block(width: 100%)[");
+            for anchor in &subject.anchors {
+                self.write_anchor_target(anchor);
+            }
+            self.writer.raw("#strong[");
+            self.write_inlines(&subject.term)?;
+            let subject_text = inlines_to_string(&subject.term);
+            let has_stop = subject_text
+                .trim_end()
+                .chars()
+                .next_back()
+                .is_some_and(|last| matches!(last, '.' | '!' | '?' | ';' | ':'));
+            if !has_stop
+                && let Some(stop) = subject_stop.as_deref().or_else(|| (!stacked).then_some(":"))
+            {
+                self.write_text_expr(stop);
+            }
+            self.writer.raw("]");
+
+            if !description.principal_text.is_empty() {
+                self.writer.raw(if stacked { "#linebreak()\n" } else { " " });
+                self.write_inlines(&description.principal_text)?;
+            }
+            if !description.description.is_empty() {
+                self.writer.raw("\n\n");
+                self.write_blocks(&description.description)?;
+            }
+            self.writer.raw("]\n");
+        }
+
+        let _ = writeln!(self.writer, "{indent}]\n");
+        Ok(())
+    }
+
+    fn write_horizontal_description_terms(
+        &mut self,
+        items: &[DescriptionListItem<'_>],
+        write_anchors: bool,
+    ) -> Result<(), Error> {
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                self.writer.raw("#linebreak()");
+            }
+            if write_anchors {
+                for anchor in &item.anchors {
+                    self.write_anchor_target(anchor);
+                }
+            }
+            self.writer.raw("#text(weight: \"bold\")[");
+            self.write_inlines(&item.term)?;
+            self.writer.raw("]");
+        }
+        Ok(())
+    }
+
+    fn write_qanda_description_terms(
+        &mut self,
+        items: &[DescriptionListItem<'_>],
+    ) -> Result<(), Error> {
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                self.writer.raw("#linebreak()");
+            }
+            for anchor in &item.anchors {
+                self.write_anchor_target(anchor);
+            }
+            self.writer.raw("#emph[");
+            self.write_inlines(&item.term)?;
+            self.writer.raw("]");
+        }
+        Ok(())
+    }
+
+    fn write_description_list_item(&mut self, item: &DescriptionListItem<'_>) -> Result<(), Error> {
+        if !item.principal_text.is_empty() {
+            self.write_inlines(&item.principal_text)?;
+            if !item.description.is_empty() {
+                self.writer.raw("\n\n");
+            }
+        }
+        self.write_blocks(&item.description)
+    }
+
+    pub(crate) fn write_ordered_list_start(&mut self, metadata: &BlockMetadata<'_>, marker: &str) {
+        let numbering = match metadata.style {
+            Some(style) => OrderedListNumbering::from_explicit_style(style).unwrap_or_default(),
+            None => match marker.matches('.').count() {
+                2 => OrderedListNumbering::LowerAlpha,
+                3 => OrderedListNumbering::LowerRoman,
+                4 => OrderedListNumbering::UpperAlpha,
+                5 => OrderedListNumbering::UpperRoman,
+                _ => OrderedListNumbering::Arabic,
+            },
+        };
+        let indent = "  ".repeat(self.list_depth);
+        let _ = writeln!(self.writer, "{indent}#[");
+        let _ = write!(self.writer, "{indent}#set enum(numbering: ");
+        self.write_ordered_list_numbering(numbering);
+        if let Some(start) = metadata
+            .attributes
+            .get_string("start")
+            .and_then(|start| start.parse::<i64>().ok())
+            .filter(|start| *start > 0)
+        {
+            let _ = write!(self.writer, ", start: {start}");
+        }
+        self.writer.raw(")\n");
+    }
+
+    fn write_ordered_list_numbering(&mut self, numbering: OrderedListNumbering) {
+        self.writer.raw("(..numbers) => text(fill: rgb(");
+        self.writer.string_literal(&self.palette.counter);
+        self.writer.raw("), ");
+        let pattern = match numbering {
+            // Typst treats `0` as literal text in a numbering pattern, so `01.`
+            // would produce `010.` for item 10 instead of Asciidoctor's `10.`.
+            OrderedListNumbering::Decimal => {
+                self.writer.raw(
+                    "{ let number = numbers.pos().last(); (if number < 10 { \"0\" } else { \"\" }) + str(number) + \".\" }",
+                );
+                None
+            }
+            // Asciidoctor PDF advances through lowercase Greek Unicode code points,
+            // including final sigma, instead of using Typst's Greek numerals.
+            OrderedListNumbering::LowerGreek => {
+                self.writer.raw(
+                    "{ let number = numbers.pos().last(); str.from-unicode(944 + number) + \".\" }",
+                );
+                None
+            }
+            OrderedListNumbering::Arabic => Some("1."),
+            OrderedListNumbering::LowerAlpha => Some("a."),
+            OrderedListNumbering::UpperAlpha => Some("A."),
+            OrderedListNumbering::LowerRoman => Some("i."),
+            OrderedListNumbering::UpperRoman => Some("I."),
+        };
+        if let Some(pattern) = pattern {
+            self.writer.raw("numbering(");
+            self.writer.string_literal(pattern);
+            self.writer.raw(", ..numbers.pos())");
+        }
+        self.writer.raw(")");
+    }
+
     pub(crate) fn write_table(
         &mut self,
         table: &Table<'_>,
@@ -1555,7 +1809,12 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 "rendering the image on the requested side with following content below it",
             );
         }
+        let has_caption = !image.title.is_empty();
+        if has_caption {
+            self.writer.raw("#block(width: 100%, breakable: false)[\n");
+        }
         let source = image.source.to_string();
+        let alt = block_image_alt(image);
         let link = image
             .metadata
             .attributes
@@ -1580,6 +1839,8 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             if uses_doc_image {
                 self.writer.raw("#docimage(");
                 self.writer.string_literal(&asset.virtual_path);
+                self.writer.raw(", alt: ");
+                self.writer.string_literal(&alt);
                 match width {
                     Some(ImageWidth::Points { value, .. }) => {
                         let _ = write!(self.writer, ", width: {value}pt");
@@ -1597,35 +1858,31 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             } else {
                 self.write_positioned_block_image(
                     &asset.virtual_path,
+                    &alt,
                     width,
                     alignment,
                     link.as_deref(),
                 );
             }
         } else {
-            self.write_block_image_fallback(image, link.as_deref());
+            self.write_block_image_fallback(image, &alt, link.as_deref());
             self.writer.raw("\n");
         }
-        if image.title.is_empty() {
-            self.writer.raw("\n");
-        } else {
+        if has_caption {
             self.write_captioned_title_with(
                 "imagecaption",
                 &image.title,
                 &image.metadata,
                 Some(CaptionKind::Figure),
             )?;
+            self.writer.raw("]\n\n");
+        } else {
             self.writer.raw("\n");
         }
         Ok(())
     }
 
-    fn write_block_image_fallback(&mut self, image: &Image<'_>, link: Option<&str>) {
-        let alt = image
-            .metadata
-            .attributes
-            .get_string("alt")
-            .map_or_else(|| block_image_default_alt(image), Cow::into_owned);
+    fn write_block_image_fallback(&mut self, image: &Image<'_>, alt: &str, link: Option<&str>) {
         if let Some(target) = link {
             self.writer.raw("#link(");
             self.writer.string_literal(target);
@@ -1641,6 +1898,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
     fn write_positioned_block_image(
         &mut self,
         path: &str,
+        alt: &str,
         width: Option<ImageWidth>,
         alignment: BlockImageAlignment,
         link: Option<&str>,
@@ -1674,11 +1932,15 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             Some(ImageWidth::Points { value, .. }) => {
                 self.writer.raw("#image(");
                 self.writer.string_literal(path);
+                self.writer.raw(", alt: ");
+                self.writer.string_literal(alt);
                 let _ = write!(self.writer, ", width: {value}pt)");
             }
             Some(ImageWidth::ContainerRatio { value, .. }) => {
                 self.writer.raw("#image(");
                 self.writer.string_literal(path);
+                self.writer.raw(", alt: ");
+                self.writer.string_literal(alt);
                 let _ = write!(self.writer, ", width: {}%)", value * 100.0);
             }
             Some(ImageWidth::IntrinsicRatio(ratio)) => {
@@ -1689,16 +1951,22 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                     ratio * 100.0
                 );
                 self.writer.string_literal(path);
+                self.writer.raw(", alt: ");
+                self.writer.string_literal(alt);
                 self.writer.raw("))");
             }
             Some(ImageWidth::ViewportRatio(ratio)) => {
                 self.writer.raw("#image(");
                 self.writer.string_literal(path);
+                self.writer.raw(", alt: ");
+                self.writer.string_literal(alt);
                 let _ = write!(self.writer, ", width: {}pt)", ratio * self.page_width_pt);
             }
             None => {
                 self.writer.raw("#image(");
                 self.writer.string_literal(path);
+                self.writer.raw(", alt: ");
+                self.writer.string_literal(alt);
                 self.writer.raw(")");
             }
         }
@@ -1713,6 +1981,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
 
     pub(crate) fn write_inline_image(&mut self, image: &Image<'_>) {
         let source = image.source.to_string();
+        let alt = inline_image_alt(image);
         let link = image
             .metadata
             .attributes
@@ -1734,11 +2003,15 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                         ratio * 100.0
                     );
                     self.writer.string_literal(&asset.virtual_path);
+                    self.writer.raw(", alt: ");
+                    self.writer.string_literal(&alt);
                     self.writer.raw("))");
                 }
                 width => {
                     self.writer.raw("image(");
                     self.writer.string_literal(&asset.virtual_path);
+                    self.writer.raw(", alt: ");
+                    self.writer.string_literal(&alt);
                     match width {
                         Some(ImageWidth::Points { value, .. }) => {
                             let _ = write!(self.writer, ", width: {value}pt");
@@ -1898,6 +2171,16 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
     }
 
     fn write_link_text(&mut self, target: &str, text: &[InlineNode<'_>]) -> Result<(), Error> {
+        match text {
+            [InlineNode::Macro(InlineMacro::Image(image))]
+                if image.metadata.attributes.get_string("link").is_some() =>
+            {
+                self.write_inline_image(image);
+                return Ok(());
+            }
+            _ => {}
+        }
+
         self.writer.raw("#link(");
         self.writer.string_literal(target);
         self.writer.raw(")[");
@@ -1909,6 +2192,12 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         self.writer.raw("]");
         Ok(())
     }
+}
+
+fn description_list_rows<'items, 'document>(
+    items: &'items [DescriptionListItem<'document>],
+) -> impl Iterator<Item = &'items [DescriptionListItem<'document>]> {
+    items.split_inclusive(|item| !item.principal_text.is_empty() || !item.description.is_empty())
 }
 
 fn table_column_tracks(table: &Table<'_>, column_count: usize) -> Vec<TableColumnTrack> {
@@ -2464,6 +2753,22 @@ fn block_image_default_alt(image: &Image<'_>) -> String {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or_default()
         .replace(['-', '_'], " ")
+}
+
+fn block_image_alt<'a>(image: &Image<'a>) -> Cow<'a, str> {
+    image
+        .metadata
+        .attributes
+        .get_string("alt")
+        .unwrap_or_else(|| Cow::Owned(block_image_default_alt(image)))
+}
+
+fn inline_image_alt<'a>(image: &Image<'a>) -> Cow<'a, str> {
+    if image.title.is_empty() {
+        block_image_alt(image)
+    } else {
+        Cow::Owned(inlines_to_string(&image.title))
+    }
 }
 
 fn block_image_alignment(metadata: &BlockMetadata<'_>) -> BlockImageAlignment {

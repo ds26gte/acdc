@@ -1,0 +1,11 @@
+== Parent
+
+=== Child
+
+Some text before.
+# a pyret-style comment line, not a heading
+more text after the hash line
+
+=== Sibling
+
+content

@@ -172,6 +172,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A paragraph continuation line starting with `=` or `#` (an ATX/Markdown-
+  style heading marker) is no longer mistaken for a fresh heading unless it
+  is preceded by a real blank line, matching asciidoctor. Previously a
+  single line break was enough, so any paragraph line beginning with `#` —
+  extremely common as a comment marker in Pyret, Python, shell, etc. — could
+  prematurely end the paragraph and get misparsed as a bogus level-0/ATX
+  section, corrupting the section tree for everything that followed (up to
+  and including spurious "section title out of sequence" warnings much
+  later in the document). Fixes anchor_with_spaces.adoc's expected output
+  too: an anchor line immediately followed by a heading with no blank line
+  between them (e.g. `[[id with spaces]]` directly above `== Heading`) now
+  merges into one literal paragraph instead of splitting into a stray
+  anchor-only paragraph plus an anchor-less section, matching asciidoctor.
 - A table whose close delimiter immediately follows its open delimiter (an
   empty table, e.g. `|===` directly followed by `|===`) now parses as an
   empty table instead of being wrongly reported as unterminated, with

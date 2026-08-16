@@ -5274,7 +5274,15 @@ peg::parser! {
             / eol() open_delimiter() &(whitespace()* eol())
             / eol() list(start, offset, block_metadata)
             / eol() &("+" (whitespace() / eol() / ![_]))  // Stop at list continuation marker
-            / eol()* &((anchor() / attributes_line())* section_level_at_line_start(offset, None) (whitespace() / eol() / ![_]))
+            // `eol()*<2,>` (a real blank line), not `eol()*`: unlike a delimited
+            // block, a heading (`=`/`#` run) is not recognized as a fresh block
+            // boundary just by starting a new line mid-paragraph — asciidoctor
+            // treats it as ordinary continuation text unless a blank line
+            // precedes it. A single-`eol()` check here let any paragraph line
+            // starting with `#` (extremely common as a comment marker in Pyret,
+            // Python, shell, etc.) prematurely end the paragraph and get
+            // misparsed as an ATX-style heading with no blank line justifying it.
+            / eol()*<2,> &((anchor() / attributes_line())* section_level_at_line_start(offset, None) (whitespace() / eol() / ![_]))
             ) [_]
         )+)
         {

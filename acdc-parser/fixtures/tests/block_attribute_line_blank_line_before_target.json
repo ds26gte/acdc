@@ -1,0 +1,137 @@
+{
+  "name": "document",
+  "type": "block",
+  "blocks": [
+    {
+      "name": "section",
+      "type": "block",
+      "title": [
+        {
+          "name": "text",
+          "type": "string",
+          "value": "Heading",
+          "location": [
+            {
+              "line": 1,
+              "col": 4
+            },
+            {
+              "line": 1,
+              "col": 10
+            }
+          ]
+        }
+      ],
+      "level": 1,
+      "blocks": [
+        {
+          "name": "list",
+          "type": "block",
+          "variant": "unordered",
+          "marker": "*",
+          "metadata": {
+            "roles": [
+              "no-flex-section"
+            ]
+          },
+          "items": [
+            {
+              "name": "listItem",
+              "type": "block",
+              "marker": "*",
+              "principal": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "value": "item one",
+                  "location": [
+                    {
+                      "line": 5,
+                      "col": 3
+                    },
+                    {
+                      "line": 5,
+                      "col": 10
+                    }
+                  ]
+                }
+              ],
+              "location": [
+                {
+                  "line": 5,
+                  "col": 1
+                },
+                {
+                  "line": 5,
+                  "col": 10
+                }
+              ]
+            },
+            {
+              "name": "listItem",
+              "type": "block",
+              "marker": "*",
+              "principal": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "value": "item two",
+                  "location": [
+                    {
+                      "line": 6,
+                      "col": 3
+                    },
+                    {
+                      "line": 6,
+                      "col": 10
+                    }
+                  ]
+                }
+              ],
+              "location": [
+                {
+                  "line": 6,
+                  "col": 1
+                },
+                {
+                  "line": 6,
+                  "col": 10
+                }
+              ]
+            }
+          ],
+          "location": [
+            {
+              "line": 3,
+              "col": 1
+            },
+            {
+              "line": 6,
+              "col": 10
+            }
+          ]
+        }
+      ],
+      "location": [
+        {
+          "line": 1,
+          "col": 1
+        },
+        {
+          "line": 6,
+          "col": 10
+        }
+      ]
+    }
+  ],
+  "location": [
+    {
+      "line": 1,
+      "col": 1
+    },
+    {
+      "line": 6,
+      "col": 10
+    }
+  ]
+}

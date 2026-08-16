@@ -1106,6 +1106,127 @@ fn apply_quote_attribute_substitutions<'input>(
     Ok(())
 }
 
+/// Build a [`BlockParsingMetadata`] from the anchor/attribute/document-attribute/title
+/// lines collected by the `block_metadata` grammar rule.
+///
+/// Factored out so `block_metadata` can consume trailing blank lines only when at
+/// least one metadata line was actually present (see that rule for why: asciidoctor
+/// lets a blank line separate a block's own attribute line(s) from its target, but
+/// this must not change behavior when there was no metadata to begin with — callers
+/// like `block_in_continuation` rely on zero-metadata calls not eating a blank line
+/// that has its own, unrelated meaning there).
+fn finish_block_metadata<'input>(
+    state: &mut ParserState<'input>,
+    lines: Vec<Result<BlockMetadataLine<'input>, Error>>,
+    parent_section_level: Option<SectionLevel>,
+    meta_start: usize,
+    meta_end: usize,
+    offset: usize,
+) -> Result<BlockParsingMetadata<'input>, Error> {
+    let mut metadata = BlockMetadata::default();
+    let mut discrete = false;
+    let mut title = Title::default();
+
+    for line in lines {
+        // Skip errors from title parsing (e.g., empty titles like "." + newline)
+        let Ok(value) = line else {
+            state.add_generic_warning(format!(
+                "failed to parse block metadata line, skipping: {line:?}"
+            ));
+            continue;
+        };
+        match value {
+            BlockMetadataLine::Anchor(value) => metadata.anchors.push(value),
+            BlockMetadataLine::Attributes((attr_discrete, attr_metadata)) => {
+                let attr_metadata = *attr_metadata;
+                discrete = attr_discrete;
+                if attr_metadata.id.is_some() {
+                    metadata.id = attr_metadata.id;
+                }
+                if attr_metadata.style.is_some() {
+                    metadata.style = attr_metadata.style;
+                }
+                metadata.roles.extend(attr_metadata.roles);
+                metadata.options.extend(attr_metadata.options);
+                for (k, v) in attr_metadata.attributes.iter() {
+                    metadata.attributes.set(k.clone(), v.clone());
+                }
+                metadata.overlay_positional_attributes(&attr_metadata.positional_attributes);
+                #[cfg(feature = "pre-spec-subs")]
+                if attr_metadata.substitutions.is_some() {
+                    metadata.substitutions = attr_metadata.substitutions;
+                }
+                if attr_metadata.attribution.is_some() {
+                    metadata.attribution = attr_metadata.attribution;
+                    metadata.attribution_substitutions = attr_metadata.attribution_substitutions;
+                } else if attr_metadata.attribution_substitutions {
+                    metadata.attribution_substitutions = true;
+                }
+                if attr_metadata.citetitle.is_some() {
+                    metadata.citetitle = attr_metadata.citetitle;
+                    metadata.citetitle_substitutions = attr_metadata.citetitle_substitutions;
+                } else if attr_metadata.citetitle_substitutions {
+                    metadata.citetitle_substitutions = true;
+                }
+            }
+            BlockMetadataLine::DocumentAttribute(key, value, set) => {
+                // Set the document attribute immediately so it's available for
+                // subsequent attribute references (e.g., in title lines)
+                state.apply_document_attribute(key, value, set);
+            }
+            BlockMetadataLine::Title(inner) => {
+                title = inner;
+            }
+        }
+    }
+    if meta_start != meta_end {
+        metadata.location = Some(state.create_block_location(meta_start, meta_end, offset));
+    }
+    #[cfg(feature = "pre-spec-subs")]
+    let subs_flags = metadata
+        .substitutions
+        .as_ref()
+        .map_or(SubsFlags::all(), |spec| {
+            let mut flags = SubsFlags::all();
+            for (flag, sub) in SubsFlags::FLAG_SUBSTITUTIONS {
+                flags.set(*flag, !spec.is_disabled(sub));
+            }
+            let resolved = spec.resolve(NORMAL);
+            let replacements = resolved
+                .iter()
+                .position(|sub| sub == &Substitution::Replacements);
+            let post_replacements = resolved
+                .iter()
+                .position(|sub| sub == &Substitution::PostReplacements);
+            flags.set(SubsFlags::REPLACEMENTS, replacements.is_some());
+            flags.set(SubsFlags::POST_REPLACEMENTS, post_replacements.is_some());
+            flags.set(
+                SubsFlags::REPLACEMENTS_BEFORE_POST_REPLACEMENTS,
+                matches!(
+                    (replacements, post_replacements),
+                    (Some(replacements), Some(post_replacements))
+                        if replacements < post_replacements
+                ),
+            );
+            flags
+        });
+    #[cfg(not(feature = "pre-spec-subs"))]
+    let subs_flags = SubsFlags::all();
+    let hardbreaks = subs_flags.contains(SubsFlags::POST_REPLACEMENTS)
+        && (state.hardbreaks || metadata.options.contains(&"hardbreaks"));
+    extract_source_attributes(state, &mut metadata);
+    extract_quote_attributes(&mut metadata);
+    apply_quote_attribute_substitutions(state, &mut metadata, offset, subs_flags)?;
+    Ok(BlockParsingMetadata {
+        metadata,
+        title,
+        parent_section_level,
+        subs_flags,
+        hardbreaks,
+        discrete,
+    })
+}
+
 /// Parse an anchor's cross-reference label (`[[id,label]]`) into inline nodes.
 ///
 /// A displayed label takes the reference-text substitutions asciidoctor
@@ -3110,118 +3231,30 @@ peg::parser! {
             )))
         }
 
+        // Asciidoctor lets a blank line separate a block's attribute/anchor/title
+        // line(s) from the block they apply to — verified directly: `[.role]`
+        // followed by a blank line and then a list still applies `role` to that
+        // list. The `+ eol()*` branch below consumes that gap (after `meta_end`,
+        // so it isn't counted as part of the metadata's own location) only when
+        // at least one metadata line matched; the plain `*<0,0>` branch keeps the
+        // original zero-metadata behavior of consuming nothing; this matters for
+        // callers such as `block_in_continuation` where a blank line has its own,
+        // unrelated meaning and must not be silently swallowed here.
         rule block_metadata(offset: usize, parent_section_level: Option<SectionLevel>) -> Result<BlockParsingMetadata<'input>, Error>
         = meta_start:position!() lines:(
             anchor:anchor() { Ok::<BlockMetadataLine<'input>, Error>(BlockMetadataLine::Anchor(anchor)) }
             / attr:attributes_line() { Ok::<BlockMetadataLine<'input>, Error>(BlockMetadataLine::Attributes((attr.0, Box::new(attr.1)))) }
             / doc_attr:document_attribute_line() { Ok::<BlockMetadataLine<'input>, Error>(BlockMetadataLine::DocumentAttribute(Cow::Borrowed(doc_attr.key), doc_attr.value, doc_attr.set)) }
             / title:title_line(offset) { title.map(BlockMetadataLine::Title) }
-        )* meta_end:position!()
+        )+ meta_end:position!() eol()*
         {
-            let mut metadata = BlockMetadata::default();
-            let mut discrete = false;
-            let mut title = Title::default();
-
-            for line in lines {
-                // Skip errors from title parsing (e.g., empty titles like "." + newline)
-                let Ok(value) = line else {
-                    state.add_generic_warning(format!("failed to parse block metadata line, skipping: {line:?}"));
-                    continue
-                };
-                match value {
-                    BlockMetadataLine::Anchor(value) => metadata.anchors.push(value),
-                    BlockMetadataLine::Attributes((attr_discrete, attr_metadata)) => {
-                        let attr_metadata = *attr_metadata;
-                        discrete = attr_discrete;
-                        if attr_metadata.id.is_some() {
-                            metadata.id = attr_metadata.id;
-                        }
-                        if attr_metadata.style.is_some() {
-                            metadata.style = attr_metadata.style;
-                        }
-                        metadata.roles.extend(attr_metadata.roles);
-                        metadata.options.extend(attr_metadata.options);
-                        for (k, v) in attr_metadata.attributes.iter() {
-                            metadata.attributes.set(k.clone(), v.clone());
-                        }
-                        metadata.overlay_positional_attributes(
-                            &attr_metadata.positional_attributes,
-                        );
-                        #[cfg(feature = "pre-spec-subs")]
-                        if attr_metadata.substitutions.is_some() {
-                            metadata.substitutions = attr_metadata.substitutions;
-                        }
-                        if attr_metadata.attribution.is_some() {
-                            metadata.attribution = attr_metadata.attribution;
-                            metadata.attribution_substitutions =
-                                attr_metadata.attribution_substitutions;
-                        } else if attr_metadata.attribution_substitutions {
-                            metadata.attribution_substitutions = true;
-                        }
-                        if attr_metadata.citetitle.is_some() {
-                            metadata.citetitle = attr_metadata.citetitle;
-                            metadata.citetitle_substitutions =
-                                attr_metadata.citetitle_substitutions;
-                        } else if attr_metadata.citetitle_substitutions {
-                            metadata.citetitle_substitutions = true;
-                        }
-                    },
-                    BlockMetadataLine::DocumentAttribute(key, value, set) => {
-                        // Set the document attribute immediately so it's available for
-                        // subsequent attribute references (e.g., in title lines)
-                        state.apply_document_attribute(key, value, set);
-                    },
-                    BlockMetadataLine::Title(inner) => {
-                        title = inner;
-                    }
-                }
-            }
-            if meta_start != meta_end {
-                metadata.location = Some(state.create_block_location(meta_start, meta_end, offset));
-            }
-            #[cfg(feature = "pre-spec-subs")]
-            let subs_flags = metadata.substitutions.as_ref().map_or(SubsFlags::all(), |spec| {
-                let mut flags = SubsFlags::all();
-                for (flag, sub) in SubsFlags::FLAG_SUBSTITUTIONS {
-                    flags.set(*flag, !spec.is_disabled(sub));
-                }
-                let resolved = spec.resolve(NORMAL);
-                let replacements = resolved
-                    .iter()
-                    .position(|sub| sub == &Substitution::Replacements);
-                let post_replacements = resolved
-                    .iter()
-                    .position(|sub| sub == &Substitution::PostReplacements);
-                flags.set(SubsFlags::REPLACEMENTS, replacements.is_some());
-                flags.set(
-                    SubsFlags::POST_REPLACEMENTS,
-                    post_replacements.is_some(),
-                );
-                flags.set(
-                    SubsFlags::REPLACEMENTS_BEFORE_POST_REPLACEMENTS,
-                    matches!(
-                        (replacements, post_replacements),
-                        (Some(replacements), Some(post_replacements))
-                            if replacements < post_replacements
-                    ),
-                );
-                flags
-            });
-            #[cfg(not(feature = "pre-spec-subs"))]
-            let subs_flags = SubsFlags::all();
-            let hardbreaks = subs_flags.contains(SubsFlags::POST_REPLACEMENTS)
-                && (state.hardbreaks || metadata.options.contains(&"hardbreaks"));
-            extract_source_attributes(state, &mut metadata);
-            extract_quote_attributes(&mut metadata);
-            apply_quote_attribute_substitutions(state, &mut metadata, offset, subs_flags)?;
-            Ok(BlockParsingMetadata {
-                metadata,
-                title,
-                parent_section_level,
-                subs_flags,
-                hardbreaks,
-                discrete,
-            })
+            finish_block_metadata(state, lines, parent_section_level, meta_start, meta_end, offset)
+        }
+        / meta_start:position!() lines:(
+            anchor:anchor() { Ok::<BlockMetadataLine<'input>, Error>(BlockMetadataLine::Anchor(anchor)) }
+        )*<0,0> meta_end:position!()
+        {
+            finish_block_metadata(state, lines, parent_section_level, meta_start, meta_end, offset)
         }
 
         // A title line can be a simple title or a section title

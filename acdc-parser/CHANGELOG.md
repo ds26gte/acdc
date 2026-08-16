@@ -172,6 +172,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A block attribute/anchor/title line (e.g. `[.role]`) followed by a blank
+  line, then its target block, no longer fails to parse. asciidoctor allows
+  a blank line in that gap (verified directly: `[.role]` then a blank line
+  then a list still applies `role` to the list) — asciidoctor's own leniency
+  here is otherwise out of scope of this fix, which addresses only the hard
+  parse error: previously this failed the *entire file*, not just the one
+  block.
 - A list item's continuation-line scan no longer stops just because the next
   line looks like a heading (`=`/`#` run). Matching how a paragraph already
   requires a genuine blank line before a heading-shaped line ends it (see the

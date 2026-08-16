@@ -4832,7 +4832,27 @@ peg::parser! {
         }
 
         rule description_list_item(offset: usize, block_metadata: &BlockParsingMetadata<'input>) -> Result<DescriptionListItem<'input>, Error>
-        = term:$((!(description_list_marker() (eol() / " ") / eol()*<2,2>) [_])+)
+        // The term may span multiple lines (asciidoctor allows a wrapped term before
+        // the `::`/`;;` marker), but that scan must stop at a delimited-block opener
+        // just like paragraph() does — otherwise a `::`/`;;` that appears inside a
+        // *later* delimited block (e.g. a fenced code sample containing a Pyret type
+        // annotation comment like `# foo :: Bar -> Baz`) gets mistaken for this dlist
+        // item's marker, swallowing the block's opening delimiter as term text and
+        // leaving its closing delimiter to be misparsed as an unterminated new block.
+        = term:$((!(
+            description_list_marker() (eol() / " ")
+            / eol()*<2,2>
+            / eol() example_delimiter()
+            / eol() listing_delimiter()
+            / eol() literal_delimiter()
+            / eol() sidebar_delimiter()
+            / eol() quote_delimiter()
+            / eol() pass_delimiter()
+            / eol() table_delimiter()
+            / eol() markdown_code_delimiter()
+            / eol() comment_delimiter()
+            / eol() open_delimiter() &(whitespace()* eol())
+        ) [_])+)
         delim_start:position!() delimiter:description_list_marker() delim_end:position!()
         whitespace()?
         principal_start:position!()

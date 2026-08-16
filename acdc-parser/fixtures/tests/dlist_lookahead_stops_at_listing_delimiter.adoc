@@ -1,0 +1,10 @@
+Here's an example of a piecewise function with 3 "pieces" (or "conditions"):
+```
+# species-dot :: (Row) -> Image
+fun species-dot(r):
+  if (r["species"] == "dog"): 1
+  end
+end
+```
+
+Some text after the block.

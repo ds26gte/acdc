@@ -172,6 +172,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A description list's wrapped-term scan no longer crosses into a following
+  delimited block. Previously, a `::`/`;;` marker inside a *later* block (for
+  example a fenced code sample containing a type-annotation comment like
+  `# foo :: Bar -> Baz`) could be mistaken for the current paragraph's dlist
+  marker, swallowing that block's opening delimiter as term text and leaving
+  its closing delimiter to be reported as an unterminated new block. Most
+  likely to surface when a paragraph is immediately followed (no blank line)
+  by a delimited block.
 - Path-based macros now recognize non-ASCII local targets, including cross-references,
   links, icons, images, audio, and video, matching Asciidoctor.
 - Table cell specifiers now accept the Asciidoctor order with spans or repeats

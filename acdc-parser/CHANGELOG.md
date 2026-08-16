@@ -172,6 +172,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Inline content containing a `(` that isn't actually a `(((concealed)))`,
+  `((flow))`, `indexterm:[...]`, or `indexterm2:[...]` index term, but
+  resembled one to the (looser) check used to decide whether to try parsing
+  one, no longer fails to parse. For example, monospace content like
+  `` `(((a)(a)))` `` — a parenthesized expression, not an index term —
+  previously hit a dead end: the real index-term rule correctly rejected
+  it, but plain text had already refused to treat the `(` as literal text,
+  leaving nothing able to consume that position. This surfaced as an
+  unrelated-looking error from whatever inline content happened to contain
+  it (e.g. "could not process constrained monospace text content"), not as
+  an index-term error, and previously failed the *entire file*, not just
+  the one inline span.
 - A block attribute/anchor/title line (e.g. `[.role]`) followed by a blank
   line, then its target block, no longer fails to parse. asciidoctor allows
   a blank line in that gap (verified directly: `[.role]` then a blank line

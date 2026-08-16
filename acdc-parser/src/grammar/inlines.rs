@@ -674,12 +674,25 @@ peg::parser! {
         rule index_term_unquoted() -> &'input str
         = content:$([^('"' | ',' | ')' | ']')]+) { content }
 
-        /// Match index term patterns without consuming (for negative lookahead in plain_text)
+        /// Match index term patterns without consuming (for negative lookahead in plain_text).
+        ///
+        /// Delegates to the real parsing rules rather than duplicating their shape: an
+        /// earlier hand-written version of this lookahead (a bare `"(((" (!"))" [_])* ")))"`
+        /// scan) accepted content the real rules reject — e.g. a term containing its own
+        /// `)...(` pair, such as `(((a)(a)))` — because it only checked for eventual `)))`,
+        /// not that the term content actually excludes `)` the way `index_term_unquoted()`
+        /// requires. That gap made plain_text refuse to consume the opening `(` (believing
+        /// an index term starts there) while the real rule below then failed to match one,
+        /// leaving no alternative able to make progress at that position — surfacing not as
+        /// this rule's own failure but as a cryptic error from whatever *recursive*
+        /// process_inlines call the character happened to be inside (e.g. constrained
+        /// monospace content). This call is inside a `!(...)` already, so any position
+        /// change from actually matching is discarded regardless.
         rule index_term_match() -> ()
-        = "(((" (!"))" [_])* ")))"  // Concealed: (((term)))
-        / "((" !("(") (!"))" [_])+ "))"  // Flow: ((term))
-        / "indexterm:[" [^']']* "]"  // indexterm:[term]
-        / "indexterm2:[" [^']']* "]"  // indexterm2:[term]
+        = index_term_concealed() {}  // Concealed: (((term)))
+        / index_term_flow() {}  // Flow: ((term))
+        / indexterm_macro() {}  // indexterm:[term]
+        / indexterm2_macro() {}  // indexterm2:[term]
 
         rule inline_menu() -> InlineNode<'input>
         = "menu:"

@@ -549,7 +549,7 @@ peg::parser! {
         /// - `,` (start of attributes)
         /// - `]` (end of link)
         rule link_title() -> &'input str
-        = "\"" title:$((!"\"" [_])*) "\"" { title }
+        = "\"" title:$(("\\" "\"" / (!"\"" [_]))*) "\"" { title }
         / "'" title:$((!("'" whitespace()* ("," / "]")) [_])*) "'" { title }
         / parts:$(balanced_link_title_part()+) { parts }
 

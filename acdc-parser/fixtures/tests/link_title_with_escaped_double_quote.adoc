@@ -1,0 +1,1 @@
+link:https://example.com["a \"quoted\" word", window="_blank"] end.

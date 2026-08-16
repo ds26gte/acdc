@@ -172,6 +172,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `link:target["quoted title"]` display title containing a backslash-
+  escaped `\"` no longer fails to parse (the unescaped `"` was mistaken
+  for the title's closing quote, and the rest of the macro couldn't match
+  as a result) — previously a hard error failing the *entire file*. Known
+  gap: the backslash itself is not yet stripped from the rendered title
+  (asciidoctor renders a literal `"`; acdc still renders `\"`), matching
+  this codebase's existing convention that escape-stripping is a converter
+  concern, not a parser one — but no converter currently handles this
+  particular escape, so it needs a follow-up.
 - Inline content containing a `(` that isn't actually a `(((concealed)))`,
   `((flow))`, `indexterm:[...]`, or `indexterm2:[...]` index term, but
   resembled one to the (looser) check used to decide whether to try parsing

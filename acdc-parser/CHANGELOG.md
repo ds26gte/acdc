@@ -172,6 +172,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A list item's continuation-line scan now stops at a following delimited
+  block (optionally preceded by a role/attribute line, e.g.
+  `[.foo]`/`=====`), matching how paragraphs already handle this. Previously
+  it only stopped at a blank line, a new list item, `+`, a section, or a
+  list separator — not a delimited block — so a list item immediately
+  followed by one (no blank line, which asciidoctor allows) swallowed the
+  block's opening delimiter as ordinary list text, leaving its closing
+  delimiter to be reported as an unterminated new block.
 - A paragraph continuation line starting with `=` or `#` (an ATX/Markdown-
   style heading marker) is no longer mistaken for a fresh heading unless it
   is preceded by a real blank line, matching asciidoctor. Previously a

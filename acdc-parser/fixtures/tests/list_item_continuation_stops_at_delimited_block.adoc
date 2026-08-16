@@ -1,0 +1,10 @@
+- first item
+- second item
+[.role]
+=====
+
+Example block content
+
+=====
+
+Text after the block.

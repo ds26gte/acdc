@@ -3874,6 +3874,23 @@ peg::parser! {
         // This is used to terminate list continuations when a section follows
         rule at_section_start() = (anchor() / attributes_line())* ("=" / "#")+ " "
 
+        // Helper rule to check if we're at the start of a delimited block (lookahead),
+        // optionally preceded by anchor/attribute metadata lines (e.g. a role like
+        // `[.actually-openblock.foo]` right before `=====`). Used to terminate list
+        // item continuation-line scanning when a delimited block follows.
+        //
+        // Unlike a heading, a delimited block does not need a blank line before it to
+        // be recognized (asciidoctor allows one directly after other content) — so
+        // without this check, a list item's continuation-line loop (which otherwise
+        // only stops at a blank line, a new list item, `+`, a section, or a list
+        // separator) swallows the block's opening delimiter as ordinary list text,
+        // leaving its closing delimiter to be misparsed as a fresh unterminated block.
+        rule at_delimited_block_start() = (anchor() / attributes_line())* (
+            example_delimiter() / listing_delimiter() / literal_delimiter() / sidebar_delimiter()
+            / quote_delimiter() / pass_delimiter() / table_delimiter() / markdown_code_delimiter()
+            / comment_delimiter() / (open_delimiter() &(whitespace()* eol()))
+        )
+
         // Helper rule to check if we're at an ordered list marker ahead (after newlines)
         rule at_ordered_marker_ahead() = eol()+ whitespace()* ordered_list_marker()
 
@@ -4089,7 +4106,7 @@ peg::parser! {
         first_line:$((!(eol()) [_])*)
         // Parse continuation lines that are part of the same paragraph
         // Stop at: blank line, list item start, explicit continuation marker, section heading, or list separator
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         // Try to parse nested list (ordered, or unordered with deeper markers)
         // Don't consume newlines if we're at a list separator (comment or [])
@@ -4152,7 +4169,7 @@ peg::parser! {
         checked:checklist_item()?
         first_line_start:position!()
         first_line:$((!(eol()) [_])*)
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         // Nested items can still have nested lists, but those also cannot consume parent continuations
         // NOTE: nested_content is NOT optional here - if no nested content matches, the entire
@@ -4202,7 +4219,7 @@ peg::parser! {
         checked:checklist_item()?
         first_line_start:position!()
         first_line:$((!(eol()) [_])*)
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         nested:(!at_list_separator() eol()+ nested_content:unordered_list_item_nested_content(offset, block_metadata, marker, parent_ordered_marker) { nested_content })?
         explicit_continuations:(!at_list_separator() cont:(
@@ -4245,7 +4262,7 @@ peg::parser! {
         checked:checklist_item()?
         first_line_start:position!()
         first_line:$((!(eol()) [_])*)
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         nested:(!at_list_separator() eol()+ nested_content:unordered_list_item_nested_content(offset, block_metadata, marker, parent_ordered_marker) { nested_content })?
         immediate_continuations:(!at_list_separator() cont:list_explicit_continuation_immediate(offset, block_metadata) { cont })*
@@ -4374,7 +4391,7 @@ peg::parser! {
         first_line:$((!(eol()) [_])*)
         // Parse continuation lines that are part of the same paragraph
         // Stop at: blank line, list item start, explicit continuation marker, section heading, or list separator
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         // Try to parse nested list (unordered, or ordered with deeper markers)
         // Don't consume newlines if we're at a list separator (comment or [])
@@ -4437,7 +4454,7 @@ peg::parser! {
         checked:checklist_item()?
         first_line_start:position!()
         first_line:$((!(eol()) [_])*)
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         // Nested items can still have nested lists, but those also cannot consume parent continuations
         // NOTE: nested_content is NOT optional here - if no nested content matches, the entire
@@ -4485,7 +4502,7 @@ peg::parser! {
         checked:checklist_item()?
         first_line_start:position!()
         first_line:$((!(eol()) [_])*)
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         nested:(!at_list_separator() eol()+ nested_content:ordered_list_item_nested_content(offset, block_metadata, marker, parent_unordered_marker) { nested_content })?
         explicit_continuations:(!at_list_separator() cont:(
@@ -4528,7 +4545,7 @@ peg::parser! {
         checked:checklist_item()?
         first_line_start:position!()
         first_line:$((!(eol()) [_])*)
-        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
+        continuation_lines:(eol() !(&eol() / &at_list_item_start() / &"+" / &at_section_start() / &at_delimited_block_start() / &at_list_separator_content()) cont_line:$((!(eol()) [_])*) { cont_line })*
         first_line_end:position!()
         nested:(!at_list_separator() eol()+ nested_content:ordered_list_item_nested_content(offset, block_metadata, marker, parent_unordered_marker) { nested_content })?
         immediate_continuations:(!at_list_separator() cont:list_explicit_continuation_immediate(offset, block_metadata) { cont })*

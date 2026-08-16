@@ -172,6 +172,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A list item's continuation-line scan no longer stops just because the next
+  line looks like a heading (`=`/`#` run). Matching how a paragraph already
+  requires a genuine blank line before a heading-shaped line ends it (see the
+  entry below), a list item now keeps an immediately-following heading-shaped
+  line as ordinary text too — asciidoctor does the same, rendering it as
+  literal continuation text rather than a section. Previously a list item
+  ending in an ordinary comment line starting with `#` (Pyret, Python, shell,
+  ...) could get split there and the `#` line reparsed as a bogus level-0
+  section, corrupting the section tree for everything that followed and
+  surfacing as "section title out of sequence" warnings much further down
+  the document.
 - A list item's continuation-line scan now stops at a following delimited
   block (optionally preceded by a role/attribute line, e.g.
   `[.foo]`/`=====`), matching how paragraphs already handle this. Previously

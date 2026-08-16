@@ -3511,9 +3511,25 @@ peg::parser! {
 
         rule pipe_table_block(start: usize, offset: usize, block_metadata: &BlockParsingMetadata<'input>) -> Result<Block<'input>, Error>
             = table_start:position!() open_delim:pipe_table_delimiter() eol()
-              content_start:position!() content:until_pipe_table_delimiter() content_end:position!()
-              eol() close_start:position!() close_delim:pipe_table_delimiter()
+              content_start:position!()
+              parsed:(
+                  // Empty table: the close delimiter sits immediately after the
+                  // open delimiter's own newline (e.g. `|===\n|===`), so there's
+                  // no second newline here to cross. until_pipe_table_delimiter's
+                  // stop condition only recognizes a delimiter reached by
+                  // crossing an eol; starting *at* one (nothing consumed yet) is
+                  // invisible to it, so without this branch content-scanning
+                  // swallows the close delimiter itself as ordinary text and the
+                  // table is wrongly reported as unterminated. Tried first since
+                  // a real first content line can't itself look like `|===`.
+                  close_start:position!() close_delim:pipe_table_delimiter()
+                  { (content_start, "", content_start, close_start, close_delim) }
+                  / content:until_pipe_table_delimiter() content_end:position!()
+                    eol() close_start:position!() close_delim:pipe_table_delimiter()
+                  { (content_start, content, content_end, close_start, close_delim) }
+              )
         {
+            let (content_start, content, content_end, close_start, close_delim) = parsed;
             parse_table_block_impl(
                 &TableParseParams {
                     start, offset, table_start, content_start, content_end, end: span_end,
@@ -3526,10 +3542,19 @@ peg::parser! {
         }
 
         rule excl_table_block(start: usize, offset: usize, block_metadata: &BlockParsingMetadata<'input>) -> Result<Block<'input>, Error>
+            // See pipe_table_block's comment: handles the empty-table case where
+            // open and close delimiters sit on consecutive lines.
             = table_start:position!() open_delim:excl_table_delimiter() eol()
-              content_start:position!() content:until_excl_table_delimiter() content_end:position!()
-              eol() close_start:position!() close_delim:excl_table_delimiter()
+              content_start:position!()
+              parsed:(
+                  close_start:position!() close_delim:excl_table_delimiter()
+                  { (content_start, "", content_start, close_start, close_delim) }
+                  / content:until_excl_table_delimiter() content_end:position!()
+                    eol() close_start:position!() close_delim:excl_table_delimiter()
+                  { (content_start, content, content_end, close_start, close_delim) }
+              )
         {
+            let (content_start, content, content_end, close_start, close_delim) = parsed;
             parse_table_block_impl(
                 &TableParseParams {
                     start, offset, table_start, content_start, content_end, end: span_end,
@@ -3542,10 +3567,19 @@ peg::parser! {
         }
 
         rule comma_table_block(start: usize, offset: usize, block_metadata: &BlockParsingMetadata<'input>) -> Result<Block<'input>, Error>
+            // See pipe_table_block's comment: handles the empty-table case where
+            // open and close delimiters sit on consecutive lines.
             = table_start:position!() open_delim:comma_table_delimiter() eol()
-              content_start:position!() content:until_comma_table_delimiter() content_end:position!()
-              eol() close_start:position!() close_delim:comma_table_delimiter()
+              content_start:position!()
+              parsed:(
+                  close_start:position!() close_delim:comma_table_delimiter()
+                  { (content_start, "", content_start, close_start, close_delim) }
+                  / content:until_comma_table_delimiter() content_end:position!()
+                    eol() close_start:position!() close_delim:comma_table_delimiter()
+                  { (content_start, content, content_end, close_start, close_delim) }
+              )
         {
+            let (content_start, content, content_end, close_start, close_delim) = parsed;
             parse_table_block_impl(
                 &TableParseParams {
                     start, offset, table_start, content_start, content_end, end: span_end,
@@ -3558,10 +3592,19 @@ peg::parser! {
         }
 
         rule colon_table_block(start: usize, offset: usize, block_metadata: &BlockParsingMetadata<'input>) -> Result<Block<'input>, Error>
+            // See pipe_table_block's comment: handles the empty-table case where
+            // open and close delimiters sit on consecutive lines.
             = table_start:position!() open_delim:colon_table_delimiter() eol()
-              content_start:position!() content:until_colon_table_delimiter() content_end:position!()
-              eol() close_start:position!() close_delim:colon_table_delimiter()
+              content_start:position!()
+              parsed:(
+                  close_start:position!() close_delim:colon_table_delimiter()
+                  { (content_start, "", content_start, close_start, close_delim) }
+                  / content:until_colon_table_delimiter() content_end:position!()
+                    eol() close_start:position!() close_delim:colon_table_delimiter()
+                  { (content_start, content, content_end, close_start, close_delim) }
+              )
         {
+            let (content_start, content, content_end, close_start, close_delim) = parsed;
             parse_table_block_impl(
                 &TableParseParams {
                     start, offset, table_start, content_start, content_end, end: span_end,

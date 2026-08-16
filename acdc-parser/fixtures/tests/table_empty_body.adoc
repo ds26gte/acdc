@@ -1,0 +1,5 @@
+[cols=1]
+|===
+|===
+
+Some text after the block.

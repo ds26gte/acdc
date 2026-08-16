@@ -172,6 +172,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A table whose close delimiter immediately follows its open delimiter (an
+  empty table, e.g. `|===` directly followed by `|===`) now parses as an
+  empty table instead of being wrongly reported as unterminated, with
+  everything after it swallowed as (mis-parsed) table content. Affects all
+  four table delimiter styles (`|===`, `!===`, `,===`, `:===`). Note: acdc
+  still emits an empty `<colgroup>`/`<tbody>` for a zero-row table where
+  asciidoctor emits a bare `<table></table>`; this is a cosmetic HTML
+  difference, not tracked further here.
 - A `////`+ comment-block delimiter that immediately follows the document
   header (title/author/revision lines), with no other block in between, is
   no longer mistaken for a one-line `//` comment while skipping header

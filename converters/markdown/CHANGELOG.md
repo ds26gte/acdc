@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Markdown output now uses one blank line between blocks and one final newline,
+  without redundant spacing around quotes and nested lists.
+- Description-list fallbacks now indent nested levels and preserve repeated
+  continuations, formatted terms, titled boundaries, named styles, and
+  trailing unanswered Q&A items.
 - Unindented ordered and unordered markers now render as nested mixed lists,
   matching Asciidoctor's list ownership.
 - Brackets in block attribute values no longer make the attribute line leak

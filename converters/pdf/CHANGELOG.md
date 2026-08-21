@@ -35,6 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Inline passthroughs now honor special-character, quote, attribute,
+  replacement, macro, and post-replacement policies, including their written
+  order and the `normal` and `verbatim` groups. Escaped delimiters, numeric
+  character references, and hard line breaks match Asciidoctor PDF. Raw backend
+  markup remains literal text instead of being executed as Typst source.
+- Link fallback text keeps `mailto:` for a `link:` target, preserves angle
+  brackets around bracketed email autolinks, and maps inter-document
+  references to the PDF output suffix, matching Asciidoctor PDF.
+- Link roles use the same supported size, decoration, colour, and background
+  formatting as other inline text. Browser-only link attributes do not affect
+  PDF output, matching Asciidoctor PDF.
+- When `hide-uri-scheme` is set, including to `false`, PDF links without custom
+  text omit their URI scheme. Body attribute changes apply in source order,
+  matching Asciidoctor PDF. Mailto macros and email autolinks retain one
+  `mailto:` scheme in their destination and display the email address.
+- Keyboard keys render as individual keycaps, buttons use bold bracketed
+  labels, and menu paths use bold text with chevron separators, matching
+  Asciidoctor PDF.
+- Keyboard, button, and menu macros remain literal unless `experimental` is
+  set, including when the attribute changes in the document body, matching
+  Asciidoctor PDF.
+- Ordered and unordered lists now preserve numbering and item ownership when
+  continued blocks or nested lists span pages, matching Asciidoctor PDF.
+- Description lists now keep nested levels indented and retain continued
+  blocks with their owning item. Mixed nested lists, formatted terms, titled
+  boundaries, named styles, and unanswered Q&A items match Asciidoctor PDF.
 - Bibliography lists now use square markers and show each entry's bracketed
   reference label. Automatic citations link to entries, and entry labels link
   back to the first automatic citation. List titles, IDs, alignment roles, and

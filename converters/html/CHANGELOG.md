@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Inline passthroughs now honor special-character, quote, attribute,
+  replacement, macro, and post-replacement policies, including their written
+  order and the `normal` and `verbatim` groups. Escaped delimiters, numeric
+  character references, and hard line breaks match Asciidoctor.
 - Ordered lists honor a positive `start` value, including on nested lists.
   Standard HTML also keeps roles on unordered-list wrappers, matching
   Asciidoctor.
@@ -135,9 +139,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:icon-set:` or `:icon-pack:`. Supports shorthand (`fab`, `far`, `fas`, `fal`, `fat`,
   `fad`, `fass`) and long-form (`brands`, `regular`, `solid`, `light`, `thin`, `duotone`,
   `sharp-solid`) values. Defaults to `fa-solid` when no set is specified. ([#360])
-- **`:hide-uri-scheme:` support** — when the document attribute `:hide-uri-scheme:` is set, the URI
-  scheme (e.g., `https://`, `http://`, `ftp://`) is stripped from displayed link text for autolinks,
-  URL macros, and link macros without custom text. The `href` attribute retains the full URL. ([#359])
+- **`:hide-uri-scheme:` support** — when `hide-uri-scheme` is set, including to
+  `false`, URI schemes are omitted from fallback link text for the content that
+  follows. Unsetting it restores full targets. The `href` retains the complete
+  URI, matching Asciidoctor. ([#359])
 - **Collapsible blocks in standard mode** — example blocks with `[%collapsible]` and paragraphs
   with `[example%collapsible]` now render as `<details>/<summary>` elements in the standard HTML
   backend. Supports `%open` for initially expanded blocks and defaults to "Details" as the
@@ -249,6 +254,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Link fallback text keeps `mailto:` for a `link:` target, escapes URL
+  ampersands, uses angle brackets only around bracketed email autolinks, and
+  maps inter-document references to the HTML output suffix, matching
+  Asciidoctor.
+- Keyboard, button, and menu macros remain literal unless `experimental` is
+  set, including when the attribute changes in the document body, matching
+  Asciidoctor.
+- Description lists now preserve delimiter-based nesting, repeated
+  continuations, formatted terms, titled boundaries, named styles, and
+  trailing unanswered Q&A items, matching Asciidoctor.
 - Image links now honor `window`, `nofollow`, and `noopener`, including the
   implicit `noopener` relation for `window=_blank`, matching Asciidoctor.
 - `[listing]`, `[source]`, `[literal]`, and `[verse]` before a block image

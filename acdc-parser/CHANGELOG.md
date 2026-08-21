@@ -131,6 +131,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The public `NORMAL` substitution list and parsed `[subs=normal]` metadata now
+  put quotes before attributes, matching Asciidoctor's substitution order.
+- A trailing `^` in URL, link, and mailto display text now sets
+  `window=_blank` and is omitted from the text, matching Asciidoctor.
+- Parsed URL, link, and autolink nodes report whether fallback display text
+  should omit the URI scheme, based on `hide-uri-scheme` at their source
+  position. Serialized ASG output is unchanged.
+- Keyboard, button, and menu macros are now recognized only while the
+  `experimental` document attribute is set. Setting or unsetting it in the
+  document body applies to the content that follows, matching Asciidoctor.
 - Comparing or debugging `Anchor` and `Reference` values now includes their
   bibliography state. Serialized ASG output is unchanged.
 - `toclevels` and `sectnumlevels` now remain undefined until the document sets
@@ -264,6 +274,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its closing delimiter to be reported as an unterminated new block. Most
   likely to surface when a paragraph is immediately followed (no blank line)
   by a delimited block.
+- Inline passthroughs apply `c`, `q`, `a`, `r`, `m`, and `p` substitutions in
+  the written order. The `n` and `v` groups use Asciidoctor's inline
+  passthrough policies. Escaped passthroughs stay literal, ordered substitutions
+  can create hard line breaks across attribute references, and expanded values
+  keep valid source locations.
+- Description lists now preserve repeated continuations, delimiter-based
+  nesting, formatted terms, trailing unanswered Q&A items, titled-list
+  boundaries, and named `style=` values, matching Asciidoctor.
 - Image macros now accept an empty inline `link=` value and use the last value
   when `link=` appears more than once, matching Asciidoctor.
 - Checklist markers now apply only to unordered list items. `[ ]`, `[x]`,

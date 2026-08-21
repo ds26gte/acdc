@@ -74,6 +74,9 @@ Block images with `float=left` or `float=right` render on the requested side, bu
 Typst does not yet support wrapping paragraph text beside a floating image, so the converter emits a warning for each affected image.
 Native side wrapping is tracked in https://github.com/typst/typst/issues/5181[Typst issue 5181].
 
+Raw inline passthrough content is always emitted through Typst's escaped text boundary.
+Unlike Asciidoctor PDF, backend-specific markup in `+++...+++` or `pass:[]` is displayed literally and cannot execute Typst code.
+
 == Document language
 
 The document `:lang:` attribute sets the Typst text language.
@@ -98,6 +101,8 @@ The PDF backend supports these built-in roles:
 * Matching `*-background` roles set the background colour.
 
 Use `[.underline]#text#` to apply a role or `[.red.underline]#text#` to combine roles.
+The same roles apply to URL, link, and mailto text through the macro's `role` attribute.
+Browser-only `window`, `target`, `title`, `rel`, and `opts` attributes do not affect PDF output.
 Unknown roles are ignored without warnings and cannot yet be styled through PDF themes.
 Highlighted text keeps its default background only when it has neither an ID nor a role.
 

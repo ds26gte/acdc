@@ -8,20 +8,21 @@ use acdc_converters_core::{
     Diagnostics, Doctype, InlineTextTransform,
     code::{SourceLineOptions, detect_language, source_line_count},
     inlines_to_string,
+    link::{autolink_fallback, link_fallback, mailto_fallback},
     list::OrderedListNumbering,
     section::effective_section_level,
     substitutions::{Replacements, TextBoundaries},
     table::{CellKind, GridRow, build_grid, determine_column_count},
     toc::{Config as TocConfig, NumberingConfig, effective_level, has_real_parts, section_numbers},
     visitor::Visitor,
-    xref::{XrefDisplay, resolve_xref},
+    xref::{XrefDisplay, interdocument_xref, resolve_xref},
 };
 use acdc_parser::{
-    Anchor, AttributeValue, Block, BlockMetadata, Caption, CaptionKind, ColumnStyle, ColumnWidth,
-    CrossReference, DescriptionList, DescriptionListItem, HorizontalAlignment, Image,
-    IndexTermKind, InlineMacro, InlineNode, ListItem, Paragraph, Section, SectionKind, Source,
-    Table, TableColumn, TableFrame, TableGrid, TableOfContents, TablePresentation, TableStripes,
-    Title, TocEntry, VerticalAlignment,
+    Anchor, AttributeValue, Autolink, Block, BlockMetadata, Caption, CaptionKind, ColumnStyle,
+    ColumnWidth, CrossReference, DescriptionList, DescriptionListItem, ElementAttributes,
+    HorizontalAlignment, Image, IndexTermKind, InlineMacro, InlineNode, ListItem, Menu, Paragraph,
+    Raw, Section, SectionKind, Substitution, Table, TableColumn, TableFrame, TableGrid,
+    TableOfContents, TablePresentation, TableStripes, Title, TocEntry, VerticalAlignment,
 };
 use acdc_pdf_images::ImageMap;
 use acdc_pdf_theme::{
@@ -525,7 +526,49 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         #[cfg(not(feature = "pre-spec-subs"))]
         let text = Cow::Owned(Replacements::unicode().transform(text, self.text_boundaries));
         let text = collapse_source_whitespace(&text);
-        self.write_text_expr(&text);
+        self.write_text_expr(&acdc_converters_core::decode_numeric_char_refs(&text));
+    }
+
+    pub(crate) fn write_raw(&mut self, raw: &Raw<'_>) {
+        let mut replacements = Replacements::unicode();
+        replacements.double_arrow_right = "=>";
+        replacements.double_arrow_left = "<=";
+        replacements.arrow_right = "->";
+        replacements.arrow_left = "<-";
+
+        let mut text = raw.content.to_string();
+        let mut applied_special_chars = false;
+        for substitution in &raw.subs {
+            match substitution {
+                Substitution::SpecialChars => {
+                    if applied_special_chars {
+                        text = text
+                            .replace('&', "&amp;")
+                            .replace('>', "&gt;")
+                            .replace('<', "&lt;");
+                    }
+                    applied_special_chars = true;
+                }
+                Substitution::Replacements => {
+                    text = replacements.apply(&text, self.text_boundaries);
+                }
+                Substitution::Attributes
+                | Substitution::Macros
+                | Substitution::PostReplacements
+                | Substitution::Normal
+                | Substitution::Verbatim
+                | Substitution::Quotes
+                | Substitution::Callouts
+                | _ => {}
+            }
+        }
+
+        let text = collapse_source_whitespace(&text);
+        if applied_special_chars {
+            self.write_text_expr(&text);
+        } else {
+            self.write_text_expr(&acdc_converters_core::decode_numeric_char_refs(&text));
+        }
     }
 
     pub(crate) fn write_quoted_span(
@@ -1147,6 +1190,10 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
     ) -> Result<(), Error> {
         let indent = "  ".repeat(self.list_depth);
         let _ = write!(self.writer, "{indent}{marker} ");
+        let has_blocks = !item.blocks.is_empty();
+        if has_blocks {
+            self.writer.raw("#block(width: 100%)[");
+        }
         if let Some(checked) = &item.checked {
             match checked {
                 acdc_parser::ListItemCheckedStatus::Checked => self.writer.raw("#checkbox(true) "),
@@ -1159,12 +1206,14 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         self.write_inlines(&item.principal)?;
         self.writer.raw("\n");
 
-        if !item.blocks.is_empty() {
+        if has_blocks {
+            self.writer.raw("\n");
             self.list_depth += 1;
             for block in &item.blocks {
                 self.visit_block(block)?;
             }
             self.list_depth -= 1;
+            let _ = writeln!(self.writer, "{indent}]");
         }
         Ok(())
     }
@@ -1268,6 +1317,45 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         }
 
         self.writer.raw(")\n})\n\n");
+        Ok(())
+    }
+
+    pub(crate) fn write_description_list(
+        &mut self,
+        list: &DescriptionList<'_>,
+    ) -> Result<(), Error> {
+        let indent = "  ".repeat(self.list_depth);
+
+        for row in description_list_rows(&list.items) {
+            let Some(description) = row.last() else {
+                continue;
+            };
+            let _ = writeln!(
+                self.writer,
+                "{indent}#block(width: 100%, above: 0pt, below: 0.5em)["
+            );
+            for (index, item) in row.iter().enumerate() {
+                if index > 0 {
+                    self.writer.raw("#linebreak()");
+                }
+                for anchor in &item.anchors {
+                    self.write_anchor_target(anchor);
+                }
+                self.writer.raw("#text(weight: \"bold\")[");
+                self.write_inlines(&item.term)?;
+                self.writer.raw("]");
+            }
+            if !description.principal_text.is_empty() || !description.description.is_empty() {
+                self.writer
+                    .raw("\n#block(above: 0pt, below: 0pt, inset: (left: 1.5em))[");
+                self.list_depth += 1;
+                self.write_description_list_item(description)?;
+                self.list_depth -= 1;
+                self.writer.raw("]");
+            }
+            let _ = writeln!(self.writer, "\n{indent}]");
+        }
+        self.writer.raw("\n");
         Ok(())
     }
 
@@ -2152,26 +2240,42 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             }
             InlineMacro::Image(image) => self.write_inline_image(image),
             InlineMacro::Keyboard(keyboard) => {
-                let joined = keyboard.keys.join("+");
-                self.write_inline_verbatim(&joined);
+                for (index, key) in keyboard.keys.iter().enumerate() {
+                    if index > 0 {
+                        self.write_text_expr("\u{202f}+\u{202f}");
+                    }
+                    self.writer.raw("#box(baseline: 15%, fill: rgb(");
+                    self.writer.string_literal(&self.palette.callout_bg);
+                    self.writer.raw("), stroke: 0.5pt + rgb(");
+                    self.writer.string_literal(&self.palette.border);
+                    self.writer
+                        .raw("), radius: 2pt, inset: (x: 2pt, y: 0.5pt))[");
+                    self.write_inline_verbatim(key);
+                    self.writer.raw("]");
+                }
             }
-            InlineMacro::Button(button) => self.write_text_expr(button.label),
-            InlineMacro::Menu(menu) => {
-                let mut parts = Vec::with_capacity(menu.items.len() + 1);
-                parts.push(menu.target);
-                parts.extend(menu.items.iter().copied());
-                self.write_text_expr(&parts.join(" > "));
+            InlineMacro::Button(button) => {
+                self.writer.raw("#strong[\\[\u{2009}");
+                self.write_text_expr(button.label);
+                self.writer.raw("\u{2009}\\]]");
             }
-            InlineMacro::Url(url) => self.write_link(&url.target, &url.text)?,
-            InlineMacro::Link(link) => self.write_link(&link.target, &link.text)?,
+            InlineMacro::Menu(menu) => self.write_menu(menu),
+            InlineMacro::Url(url) => {
+                let target = url.target.to_string();
+                let fallback = link_fallback(&target, url.hides_uri_scheme());
+                self.write_link(&target, &url.text, Some(&url.attributes), fallback)?;
+            }
+            InlineMacro::Link(link) => {
+                let target = link.target.to_string();
+                let fallback = link_fallback(&target, link.hides_uri_scheme());
+                self.write_link(&target, &link.text, Some(&link.attributes), fallback)?;
+            }
             InlineMacro::Mailto(mailto) => {
-                let target = format!("mailto:{}", mailto.target);
-                self.write_link_text(&target, &mailto.text)?;
+                let target = mailto.target.to_string();
+                let fallback = mailto_fallback(&target);
+                self.write_link(&target, &mailto.text, Some(&mailto.attributes), fallback)?;
             }
-            InlineMacro::Autolink(autolink) => {
-                let target = autolink.url.to_string();
-                self.write_link_text(&target, &[])?;
-            }
+            InlineMacro::Autolink(autolink) => self.write_autolink(autolink)?,
             InlineMacro::CrossReference(xref) => self.write_cross_reference(xref)?,
             InlineMacro::Pass(pass) => {
                 if let Some(text) = pass.text {
@@ -2187,6 +2291,38 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn write_menu(&mut self, menu: &Menu<'_>) {
+        let mut parts = Vec::with_capacity(menu.items.len() + 1);
+        parts.push(menu.target);
+        parts.extend(menu.items.iter().copied());
+        self.writer.raw("#strong[");
+        for (index, part) in parts.into_iter().enumerate() {
+            if index > 0 {
+                self.write_text_expr(" ");
+                self.writer.raw("#text(size: 1.15em, fill: rgb(");
+                self.writer.string_literal(&self.palette.accent);
+                self.writer.raw("))[\u{203a}]");
+                self.write_text_expr(" ");
+            }
+            self.write_text_expr(part);
+        }
+        self.writer.raw("]");
+    }
+
+    fn write_autolink(&mut self, autolink: &Autolink<'_>) -> Result<(), Error> {
+        let target = autolink.url.to_string();
+        let (fallback, angle_brackets) =
+            autolink_fallback(&target, autolink.bracketed, autolink.hides_uri_scheme());
+        if angle_brackets {
+            self.write_text_expr("<");
+        }
+        self.write_link(&target, &[], None, fallback)?;
+        if angle_brackets {
+            self.write_text_expr(">");
         }
         Ok(())
     }
@@ -2217,7 +2353,9 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         }
 
         if !xref.text.is_empty() {
-            if references.contains_key(xref.target) {
+            if let Some((target, _)) = self.interdocument_xref(xref.target) {
+                self.write_external_link(&target, |visitor| visitor.write_inlines(&xref.text))?;
+            } else if references.contains_key(xref.target) {
                 self.write_labelled_link(xref.target, |visitor| visitor.write_inlines(&xref.text))?;
             } else {
                 self.write_inlines(&xref.text)?;
@@ -2238,7 +2376,39 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             XrefDisplay::Unresolved(text) | XrefDisplay::Nested(text) => {
                 self.write_text_expr(&text);
             }
+            XrefDisplay::External(target) => {
+                if let Some((target, text)) = self.interdocument_xref(&target) {
+                    self.write_external_link(&target, |visitor| {
+                        visitor.write_text_expr(&text);
+                        Ok(())
+                    })?;
+                } else {
+                    self.write_text_expr(&target);
+                }
+            }
         }
+        Ok(())
+    }
+
+    fn interdocument_xref(&self, target: &str) -> Option<(String, String)> {
+        let attributes = self.processor.document_attributes();
+        let extension = attributes
+            .get_string("relfilesuffix")
+            .or_else(|| attributes.get_string("outfilesuffix"))
+            .map_or_else(|| "pdf".to_string(), Cow::into_owned);
+        interdocument_xref(target, extension.strip_prefix('.').unwrap_or(&extension))
+    }
+
+    fn write_external_link(
+        &mut self,
+        target: &str,
+        content: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.writer.raw("#link(");
+        self.writer.string_literal(target);
+        self.writer.raw(")[");
+        content(self)?;
+        self.writer.raw("]");
         Ok(())
     }
 
@@ -2255,16 +2425,22 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         Ok(())
     }
 
-    fn write_link(&mut self, target: &Source<'_>, text: &[InlineNode<'_>]) -> Result<(), Error> {
-        self.write_link_text(&target.to_string(), text)
-    }
+    fn write_link(
+        &mut self,
+        target: &str,
+        text: &[InlineNode<'_>],
+        attributes: Option<&ElementAttributes<'_>>,
+        fallback: &str,
+    ) -> Result<(), Error> {
+        let role = attributes.and_then(|attributes| attributes.get_string("role"));
+        let wrappers = self.write_inline_span_start(None, role.as_deref());
 
-    fn write_link_text(&mut self, target: &str, text: &[InlineNode<'_>]) -> Result<(), Error> {
         match text {
             [InlineNode::Macro(InlineMacro::Image(image))]
                 if image.metadata.attributes.get_string("link").is_some() =>
             {
                 self.write_inline_image(image);
+                self.write_inline_span_end(wrappers);
                 return Ok(());
             }
             _ => {}
@@ -2274,11 +2450,12 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         self.writer.string_literal(target);
         self.writer.raw(")[");
         if text.is_empty() {
-            self.write_text_expr(target);
+            self.write_text_expr(fallback);
         } else {
             self.write_inlines(text)?;
         }
         self.writer.raw("]");
+        self.write_inline_span_end(wrappers);
         Ok(())
     }
 }

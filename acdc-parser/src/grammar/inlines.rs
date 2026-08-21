@@ -114,10 +114,9 @@ pub(crate) fn match_constrained_boundary(b: u8) -> bool {
             | b'!'
             | b'\''
             | b'"'
-            | b'<'
-            | b'>'
             | b'^'
             | b'~'
+            | b'+'
     )
 }
 
@@ -193,6 +192,13 @@ macro_rules! process_inlines_or_err {
             $msg
         })
     };
+}
+
+fn strip_link_window_shorthand(text: Option<&str>) -> (Option<&str>, bool) {
+    match text.and_then(|text| text.strip_suffix('^')) {
+        Some(text) => (Some(text), true),
+        None => (text, false),
+    }
 }
 
 peg::parser! {
@@ -572,10 +578,11 @@ peg::parser! {
         "]"
         {
             tracing::debug!(?content, "Found pass inline");
+            let location = state.create_block_location(span_start, span_end, state.inline_ctx.offset);
             InlineNode::Macro(InlineMacro::Pass(Pass {
-                text: Some(content.trim()),
+                text: Some(content),
                 substitutions: substitutions.into_iter().filter_map(|s| parse_substitution(s.trim())).collect(),
-                location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
+                location,
                 kind: PassthroughKind::Macro,
             }))
         }
@@ -694,7 +701,7 @@ peg::parser! {
         / indexterm2_macro() {}  // indexterm2:[term]
 
         rule inline_menu() -> InlineNode<'input>
-        = "menu:"
+        = check_experimental() "menu:"
         target:$([^'[']+)
         "["
         items:((item:$([^(']' | '>')]+) { item.trim() }) ** (">" whitespace()?))
@@ -710,10 +717,10 @@ peg::parser! {
 
         /// Match inline menu without consuming - for use in negative lookaheads.
         rule inline_menu_match()
-        = "menu:" [^'[']+ "[" ([^']' | '>']+ (">" whitespace()? [^']' | '>']+)*)? "]"
+        = check_experimental() "menu:" [^'[']+ "[" ([^']' | '>']+ (">" whitespace()? [^']' | '>']+)*)? "]"
 
         rule inline_button() -> InlineNode<'input>
-        = "btn:[" label:$balanced_bracket_content() "]"
+        = check_experimental() "btn:[" label:$balanced_bracket_content() "]"
         {
             tracing::debug!(?label, "Found button inline");
             InlineNode::Macro(InlineMacro::Button(Button {
@@ -724,10 +731,10 @@ peg::parser! {
 
         /// Match inline button without consuming - for use in negative lookaheads.
         rule inline_button_match()
-        = "btn:[" balanced_bracket_content() "]"
+        = check_experimental() "btn:[" balanced_bracket_content() "]"
 
         rule inline_keyboard() -> InlineNode<'input>
-        = "kbd:["
+        = check_experimental() "kbd:["
         keys:((key:$([^(']' | '+' | ',')]+) { key.trim() }) ** (("," / "+") whitespace()?))
         "]"
         {
@@ -740,7 +747,7 @@ peg::parser! {
 
         /// Match inline keyboard without consuming - for use in negative lookaheads.
         rule inline_keyboard_match()
-        = "kbd:[" [^']' | '+' | ',']+ (("," / "+") whitespace()? [^']' | '+' | ',']+)* "]"
+        = check_experimental() "kbd:[" [^']' | '+' | ',']+ (("," / "+") whitespace()? [^']' | '+' | ',']+)* "]"
 
         /// Parse URL macros with attribute handling.
         ///
@@ -767,7 +774,11 @@ peg::parser! {
                 subs_flags: state.inline_ctx.subs_flags,
                 ..BlockParsingMetadata::default()
             };
-            let (text, attributes) = content;
+            let (text, mut attributes) = content;
+            let (text, opens_new_window) = strip_link_window_shorthand(text);
+            if opens_new_window && !attributes.iter().any(|(name, _, _)| name == "window") {
+                attributes.push((Cow::Borrowed("window"), "_blank".into(), None));
+            }
             let mut metadata = BlockMetadata::default();
             for (k, v, _pos) in attributes {
                 if let AttributeValue::String(v) = v {
@@ -790,6 +801,7 @@ peg::parser! {
                 target: target_source,
                 attributes: metadata.attributes.clone(),
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
+                hide_uri_scheme: state.document_attributes.is_set("hide-uri-scheme"),
             })))
         }
 
@@ -824,7 +836,11 @@ peg::parser! {
                 subs_flags: state.inline_ctx.subs_flags,
                 ..BlockParsingMetadata::default()
             };
-            let (text, attributes) = content;
+            let (text, mut attributes) = content;
+            let (text, opens_new_window) = strip_link_window_shorthand(text);
+            if opens_new_window && !attributes.iter().any(|(name, _, _)| name == "window") {
+                attributes.push((Cow::Borrowed("window"), "_blank".into(), None));
+            }
             let mut metadata = BlockMetadata::default();
             for (k, v, _pos) in attributes {
                 if let AttributeValue::String(v) = v {
@@ -861,6 +877,9 @@ peg::parser! {
         rule check_macros() -> ()
         = {? if state.inline_ctx.subs_flags.contains(SubsFlags::MACROS) { Ok(()) } else { Err("macros disabled") } }
 
+        rule check_experimental() -> ()
+        = {? if state.document_attributes.is_set("experimental") { Ok(()) } else { Err("experimental UI macros disabled") } }
+
         rule check_post_replacements() -> ()
         = {? if state.inline_ctx.subs_flags.contains(SubsFlags::POST_REPLACEMENTS) { Ok(()) } else { Err("post_replacements disabled") } }
 
@@ -891,6 +910,7 @@ peg::parser! {
                 url: url_source,
                 bracketed,
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
+                hide_uri_scheme: state.document_attributes.is_set("hide-uri-scheme"),
             })))
         }
 
@@ -1154,7 +1174,11 @@ peg::parser! {
                 subs_flags: state.inline_ctx.subs_flags,
                 ..BlockParsingMetadata::default()
             };
-            let (text, attributes) = content;
+            let (text, mut attributes) = content;
+            let (text, opens_new_window) = strip_link_window_shorthand(text);
+            if opens_new_window && !attributes.iter().any(|(name, _, _)| name == "window") {
+                attributes.push((Cow::Borrowed("window"), "_blank".into(), None));
+            }
             let mut metadata = BlockMetadata::default();
             for (k, v, _pos) in attributes {
                 if let AttributeValue::String(v) = v {
@@ -1182,6 +1206,7 @@ peg::parser! {
                 target,
                 attributes: metadata.attributes.clone(),
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
+                hide_uri_scheme: state.document_attributes.is_set("hide-uri-scheme"),
             })))
         }
 
@@ -1318,7 +1343,7 @@ peg::parser! {
         /// character (or nothing at end of input), so it works in both `&` and
         /// `!` lookaheads where the old inline character class was used.
         rule constrained_boundary_follow()
-        = [' ' | '\t' | '\n' | ',' | ';' | '"' | '.' | '?' | '!' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '/' | '-' | '|' | '<' | '>' | '^' | '~']
+        = [' ' | '\t' | '\n' | ',' | ';' | '"' | '.' | '?' | '!' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '/' | '-' | '|' | '<' | '>' | '^' | '~' | '+']
         / non_word_non_ascii_char()
         / ![_]
 

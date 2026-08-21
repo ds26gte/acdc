@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 #[cfg(feature = "pre-spec-subs")]
 use acdc_converters_core::substitutions::effective_subs_flags;
 use acdc_converters_core::{
-    Doctype, decode_numeric_char_refs, inlines_to_string,
+    Doctype, inlines_to_string,
     section::{
         appendix_number_prefix, effective_section_level, part_number_prefix, section_number_prefix,
     },
@@ -340,21 +340,7 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
         if list.metadata.style == Some("qanda") {
             return self.write_qanda_description_list(list);
         }
-        for item in &list.items {
-            for anchor in &item.anchors {
-                self.write_anchor_target(anchor);
-            }
-            self.writer.raw("#text(weight: \"bold\")[");
-            self.write_inlines(&item.term)?;
-            self.writer.raw("]\n");
-            if !item.principal_text.is_empty() {
-                self.write_inlines(&item.principal_text)?;
-                self.writer.raw("\n");
-            }
-            self.write_blocks(&item.description)?;
-        }
-        self.writer.raw("\n");
-        Ok(())
+        self.write_description_list(list)
     }
 
     fn visit_callout_list(&mut self, list: &CalloutList<'_>) -> Result<(), Self::Error> {
@@ -479,9 +465,7 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
         let result = (|| {
             match node {
                 InlineNode::PlainText(plain) => self.write_plain(plain.content),
-                InlineNode::RawText(raw) => {
-                    self.write_text_expr(&decode_numeric_char_refs(raw.content));
-                }
+                InlineNode::RawText(raw) => self.write_raw(raw),
                 InlineNode::VerbatimText(verbatim) => self.write_text_expr(verbatim.content),
                 InlineNode::BoldText(bold) => {
                     self.write_quoted_span(bold.id, bold.role, "#strong[", &bold.content, "]")?;

@@ -43,17 +43,19 @@
 //! IDs, trusting the document author to provide safe values.
 
 use std::{
+    borrow::Cow,
     io::{self, Write},
     rc::Rc,
 };
 
 use acdc_converters_core::{
     inlines_to_string,
+    link::{autolink_fallback, link_fallback, mailto_fallback},
     substitutions::{
         Replacements, TextBoundaries, restore_escaped_patterns, strip_backslash_escapes,
     },
     visitor::{Visitor, WritableVisitor},
-    xref::{XrefDisplay, resolve_xref},
+    xref::{XrefDisplay, interdocument_xref, resolve_xref},
 };
 use acdc_parser::{
     AttributeValue, Autolink, Bold, Button, CalloutRef, CrossReference, CurvedApostrophe,
@@ -114,7 +116,55 @@ fn replacements() -> Replacements<'static> {
     replacements
 }
 
-/// Escape `&` to `&amp;` in URL strings for use in `href` attributes.
+fn passthrough_replacements() -> Replacements<'static> {
+    let mut replacements = replacements();
+    replacements.double_arrow_right = "=>";
+    replacements.double_arrow_left = "<=";
+    replacements.arrow_right = "->";
+    replacements.arrow_left = "<-";
+    replacements
+}
+
+fn passthrough_substitution_text(
+    text: &str,
+    subs: &[Substitution],
+    text_boundaries: TextBoundaries,
+) -> String {
+    let replacements = passthrough_replacements();
+    let mut text = text.to_string();
+    let mut applied_special_chars = false;
+
+    for substitution in subs {
+        match substitution {
+            Substitution::SpecialChars => {
+                text = text
+                    .replace('&', "&amp;")
+                    .replace('>', "&gt;")
+                    .replace('<', "&lt;");
+                applied_special_chars = true;
+            }
+            Substitution::Replacements => {
+                text = replacements.apply(&text, text_boundaries);
+            }
+            Substitution::Attributes
+            | Substitution::Macros
+            | Substitution::PostReplacements
+            | Substitution::Normal
+            | Substitution::Verbatim
+            | Substitution::Quotes
+            | Substitution::Callouts
+            | _ => {}
+        }
+    }
+
+    if applied_special_chars {
+        encode_html_entities(&text)
+    } else {
+        text
+    }
+}
+
+/// Escape `&` to `&amp;` in URL strings for use in HTML.
 pub(crate) fn escape_href(url: &str) -> String {
     url.replace('&', "&amp;")
 }
@@ -128,15 +178,6 @@ pub(crate) fn escape_pcdata(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-/// Strip the URI scheme (e.g., `https://`, `http://`, `ftp://`) from a URL string.
-///
-/// Used when the `hide-uri-scheme` document attribute is set to display cleaner link text
-/// while preserving the full URL in the `href` attribute.
-fn strip_uri_scheme(url: &str) -> &str {
-    url.find("://")
-        .map_or(url, |pos| url.get(pos + 3..).unwrap_or(url))
 }
 
 /// Extract the `role` attribute as a non-empty, unquoted string.
@@ -168,20 +209,6 @@ fn link_class_attr(role: Option<String>, bare: bool) -> String {
         (true, None) => " class=\"bare\"".to_string(),
         (false, Some(role)) => format!(" class=\"{role}\""),
         (false, None) => String::new(),
-    }
-}
-
-/// Compute the visible fallback text for a link target when no display text was given.
-///
-/// Strips the `mailto:` prefix, or — when `hide_uri_scheme` is set — strips schemes like
-/// `https://`, `http://`, `ftp://`. Otherwise returns the target as-is.
-fn link_display_fallback(target: &str, hide_uri_scheme: bool) -> &str {
-    if let Some(email) = target.strip_prefix("mailto:") {
-        email
-    } else if hide_uri_scheme {
-        strip_uri_scheme(target)
-    } else {
-        target
     }
 }
 
@@ -454,7 +481,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         } else if r.subs.is_empty() {
             content.to_string()
         } else {
-            substitution_text(content, &r.subs, options, self.text_boundaries())
+            passthrough_substitution_text(content, &r.subs, self.text_boundaries())
         };
         write!(self.writer_mut(), "{text}")?;
         Ok(())
@@ -745,27 +772,21 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
     }
 
     fn render_autolink(&mut self, al: &Autolink<'_>, options: &RenderOptions) -> Result<(), Error> {
-        let processor = self.processor.clone();
         let w = self.writer_mut();
-        let hide_uri_scheme = processor
-            .document_attributes()
-            .get("hide-uri-scheme")
-            .is_some();
         let href_str = al.url.to_string();
-        let inner = if al.bracketed {
-            href_str
-                .strip_prefix('<')
-                .and_then(|s| s.strip_suffix('>'))
-                .unwrap_or(&href_str)
-        } else {
-            &href_str
-        };
-        let display_text = link_display_fallback(inner, hide_uri_scheme).to_string();
+        let (display_text, angle_brackets) =
+            autolink_fallback(&href_str, al.bracketed, al.hides_uri_scheme());
+        let display_text = escape_href(display_text);
 
         if options.inlines_basic || options.toc_mode {
+            if angle_brackets {
+                write!(w, "&lt;")?;
+            }
             write!(w, "{display_text}")?;
-        } else if al.bracketed {
-            // Preserve angle brackets for bracketed autolinks (e.g., <user@example.com>)
+            if angle_brackets {
+                write!(w, "&gt;")?;
+            }
+        } else if angle_brackets {
             write!(
                 w,
                 "&lt;<a href=\"{}\">{display_text}</a>&gt;",
@@ -787,13 +808,8 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         options: &RenderOptions,
         subs: &[Substitution],
     ) -> Result<(), Error> {
-        let processor = self.processor.clone();
-        let hide_uri_scheme = processor
-            .document_attributes()
-            .get("hide-uri-scheme")
-            .is_some();
         let target_str = l.target.to_string();
-        let fallback = link_display_fallback(&target_str, hide_uri_scheme);
+        let fallback = escape_href(link_fallback(&target_str, l.hides_uri_scheme()));
 
         if options.inlines_basic || options.toc_mode {
             if l.text.is_empty() {
@@ -892,13 +908,8 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         options: &RenderOptions,
         subs: &[Substitution],
     ) -> Result<(), Error> {
-        let processor = self.processor.clone();
-        let hide_uri_scheme = processor
-            .document_attributes()
-            .get("hide-uri-scheme")
-            .is_some();
         let target_str = u.target.to_string();
-        let fallback = link_display_fallback(&target_str, hide_uri_scheme);
+        let fallback = escape_href(link_fallback(&target_str, u.hides_uri_scheme()));
 
         if options.toc_mode {
             if u.text.is_empty() {
@@ -936,9 +947,8 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         subs: &[Substitution],
     ) -> Result<(), Error> {
         let target_str = m.target.to_string();
-        // `mailto:` never uses `hide-uri-scheme` (the prefix strip handles it),
-        // and never emits `class="bare"` (asciidoctor's convention).
-        let fallback = link_display_fallback(&target_str, false);
+        // `mailto:` never emits `class="bare"` (asciidoctor's convention).
+        let fallback = escape_href(mailto_fallback(&target_str));
 
         if options.toc_mode {
             if m.text.is_empty() {
@@ -1028,10 +1038,6 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
     fn render_button(&mut self, b: &Button<'_>) -> Result<(), Error> {
         let processor = self.processor.clone();
         let w = self.writer_mut();
-        if processor.document_attributes.get("experimental").is_none() {
-            write!(w, "btn:[{}]", b.label)?;
-            return Ok(());
-        }
         if processor.variant() == crate::HtmlVariant::Semantic {
             write!(w, "<kbd class=\"button\"><samp>{}</samp></kbd>", b.label)?;
         } else {
@@ -1065,6 +1071,24 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
                 &processor.xref_guard,
             );
 
+            if let XrefDisplay::External(target) = &display {
+                let Some((target, text)) = self.interdocument_xref(target) else {
+                    write!(self.writer_mut(), "{}", escape_pcdata(target))?;
+                    return Ok(());
+                };
+                if options.inlines_basic || options.toc_mode {
+                    write!(self.writer_mut(), "{}", escape_pcdata(&text))?;
+                } else {
+                    write!(
+                        self.writer_mut(),
+                        "<a href=\"{}\">{}</a>",
+                        escape_href(&target),
+                        escape_pcdata(&text)
+                    )?;
+                }
+                return Ok(());
+            }
+
             // A cross-reference inside another one's text cannot be a link: an
             // `<a>` does not nest. Everything else links, including an
             // unresolved target, matching asciidoctor.
@@ -1085,6 +1109,9 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
                 | XrefDisplay::Nested(text) => {
                     write!(self.writer_mut(), "{}", escape_pcdata(&text))?;
                 }
+                XrefDisplay::External(target) => {
+                    write!(self.writer_mut(), "{}", escape_pcdata(&target))?;
+                }
             }
             if linked {
                 write!(self.writer_mut(), "</a>")?;
@@ -1099,12 +1126,30 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             return Ok(());
         }
 
+        if let Some((target, _)) = self.interdocument_xref(xref.target) {
+            write!(self.writer_mut(), "<a href=\"{}\">", escape_href(&target))?;
+            for inline in &xref.text {
+                self.render_inline_node(inline, options, subs)?;
+            }
+            write!(self.writer_mut(), "</a>")?;
+            return Ok(());
+        }
+
         write!(self.writer_mut(), "<a href=\"#{}\">", xref.target)?;
         for inline in &xref.text {
             self.render_inline_node(inline, options, subs)?;
         }
         write!(self.writer_mut(), "</a>")?;
         Ok(())
+    }
+
+    fn interdocument_xref(&self, target: &str) -> Option<(String, String)> {
+        let attributes = self.processor.document_attributes();
+        let extension = attributes
+            .get_string("relfilesuffix")
+            .or_else(|| attributes.get_string("outfilesuffix"))
+            .map_or_else(|| "html".to_string(), Cow::into_owned);
+        interdocument_xref(target, extension.strip_prefix('.').unwrap_or(&extension))
     }
 
     fn render_stem(&mut self, s: &Stem<'_>) -> Result<(), Error> {
@@ -1247,10 +1292,7 @@ fn substitution_text(
         return String::new();
     }
 
-    // When escape_html is false (subs=none), return text as-is
-    if !subs.contains(&Substitution::SpecialChars) {
-        return text.to_string();
-    }
+    let should_escape = subs.contains(&Substitution::SpecialChars);
 
     // Determine if we should apply typography replacements
     // Based on substitutions list, skip for basic mode (passthrough)
@@ -1265,8 +1307,13 @@ fn substitution_text(
         text.to_string()
     };
 
-    // Escape & first (before arrow replacements that produce & entities)
-    let text = escape_ampersands(&text);
+    // Escape source ampersands before replacements so entities produced by the
+    // replacement table remain valid HTML.
+    let text = if should_escape {
+        escape_ampersands(&text)
+    } else {
+        text
+    };
 
     // Apply all typography replacements (em-dashes, arrows, symbols, ellipsis, apostrophes)
     // This must happen after & escaping (replacements produce & entities) and before <> escaping
@@ -1284,6 +1331,10 @@ fn substitution_text(
     } else {
         text
     };
+
+    if !should_escape {
+        return text;
+    }
 
     // Escape < and > after restore so that restored patterns (e.g., \=> → =>) keep literal chars
     let text = text.replace('>', "&gt;").replace('<', "&lt;");

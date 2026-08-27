@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Listing, source, and literal blocks marked `%autofit` now reduce their code
+  size when needed to avoid wrapping. `options=autofit` and the document-wide
+  `autofit-option` attribute provide the same behavior, with a theme-controlled
+  minimum size, matching Asciidoctor PDF.
+- Cross-references preserve formatted explicit text through supported nested
+  inline macros. Empty references to captioned blocks honor source-order
+  `xrefstyle=basic`, `short`, and `full`, including custom and disabled
+  captions, matching Asciidoctor PDF.
+- Visible index terms and generated catalog labels preserve inline formatting
+  and attribute substitutions. Formatted labels remain distinct catalog terms,
+  matching Asciidoctor PDF.
+- Substitutions ordered after macros update both visible index terms and their
+  catalog labels, matching Asciidoctor DocBook. Asciidoctor PDF leaves the
+  earlier catalog value unchanged.
+- `[index]` sections now generate page-linked catalogs from visible and
+  concealed index terms, including secondary and tertiary terms. Empty index
+  sections are omitted, and `index-pagenum-sequence-style=page` or `range`
+  consolidates repeated page numbers. Non-screen media uses unlinked, unique
+  page numbers with contiguous ranges. Catalogs use two columns by default,
+  support theme-controlled column counts and gaps, and accept `%notitle` to hide
+  the visible heading, matching Asciidoctor PDF.
 - Tagged PDFs now include explicit or filename-derived alternative text for
   embedded block and inline images. Asciidoctor PDF 2.3.15 does not emit tagged
   PDF structure.
@@ -30,11 +51,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convenience attributes, matching Asciidoctor PDF's backend traits.
 - Initial Typst-backed PDF converter with core AsciiDoc rendering, themed page chrome,
   branding and watermark options, colour emoji, local and remote images, asset warnings
-  and strict mode, plus optional generated-Typst output for debugging. Unsupported icons,
-  audio, and video degrade with warnings or textual fallbacks.
+  and strict mode, plus optional generated-Typst output for debugging. Stem content
+  degrades with a warning and escaped textual fallback.
 
 ### Changed
 
+- Structured PDF fallback warnings now identify the affected source construct
+  when a direct primary-source location is available. A zero-width table
+  warning also explains how to restore the omitted table. Document-wide
+  compatibility warnings remain deduplicated, resource failures remain
+  independently actionable, and strict asset mode still affects only asset failures.
+- PDF output now applies the built-in `big`, `small`, `subtitle`, `underline`,
+  and `line-through` paragraph roles and preserves repeated spaces in inline
+  text marked `.pre-wrap`. Ordered and unordered lists honor the markerless
+  and explicit bullet styles without leaking those styles into nested lists,
+  matching Asciidoctor PDF.
+- Images now honor `scale` and `scaledwidth` after `pdfwidth`, inline images
+  honor `fit=line`, and block images marked `%align-to-page`
+  align relative to the physical page. Block-specific admonition image icons
+  resolve through `iconsdir`, `%breakable` tables keep their ID and caption
+  with the first row, and macro table-of-contents blocks honor `%noheader` and
+  `%nofooter`, matching Asciidoctor PDF.
+- Inline images marked `fit=none`, PHP source blocks marked `%mixed`, and page
+  breaks that request a different `page-layout` now emit one structured
+  warning per document. ACDC uses normal intrinsic image sizing, Typst's normal
+  PHP highlighting, and the document page layout; use Asciidoctor PDF when the
+  full fallback behavior is required.
+- Admonition, source, listing, literal, example, open, quote, verse, sidebar,
+  stem, and table blocks marked `%unbreakable` now move intact to the next page
+  when they fit there. Blocks taller than a page remain breakable, matching
+  Asciidoctor PDF without clipping content.
+- Paragraphs with the `.lead` role now use larger text. The first paragraph in
+  a document preamble receives the same presentation automatically unless it
+  has an explicit role, matching Asciidoctor.
+- Ordinary sections marked `%notitle` now hide only their body heading while
+  retaining their table-of-contents and outline entries, numbering,
+  cross-reference text, destination, and chapter page break. Discrete headings
+  continue to ignore `%notitle`, matching Asciidoctor PDF.
+- Parser block and inline variants added before PDF support now produce
+  structured warnings when omitted instead of disappearing without a
+  user-visible diagnostic.
+- Audio and video blocks now render clickable, labelled static fallbacks instead
+  of plain placeholder text. Local targets honor `imagesdir`; video alternatives
+  remain separate links; and an available poster links to the first video source.
+  Titles render below the fallback, playback options do not affect it, and one
+  document-level warning explains that in-document playback requires HTML,
+  matching Asciidoctor PDF without fetching playable media.
+- Inline icons now support text, built-in glyph, and image modes. Text and
+  missing-glyph fallbacks use the icon alternative text; image mode honors
+  `iconsdir` and `icontype`, including `icons=svg` and similar format values.
+  Font icons honor the `1x` through `5x`, `lg`, and `fw` sizes. Asciidoctor
+  PDF ignores icon titles and image dimensions, so ACDC does too. Unsupported
+  font icons and unavailable image icons emit a warning for each macro while
+  retaining a readable text fallback.
 - Inline passthroughs now honor special-character, quote, attribute,
   replacement, macro, and post-replacement policies, including their written
   order and the `normal` and `verbatim` groups. Escaped delimiters, numeric
@@ -189,9 +258,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upper-alpha, and upper-Roman numbering through level five, then Arabic at
   deeper levels. Explicit parent styles do not affect their children, matching
   Asciidoctor PDF.
-- Ordered lists honor positive `start` values across all supported numbering
-  styles. Nested lists keep style and start attributes placed directly before
-  their first item, matching Asciidoctor PDF.
+- Ordered lists honor positive `start` values and the `%reversed` option across
+  all supported numbering styles. Nested lists keep style, start, and reversed
+  metadata placed directly before their first item, matching Asciidoctor PDF.
+- Consecutive page breaks no longer create blank pages unless the later break
+  has `%always`, matching Asciidoctor PDF.
 - Named footnote references reuse the original footnote and its assigned number.
 - Inline IDs such as `[#term]*Term*` now create PDF link targets on formatted
   text.
@@ -289,6 +360,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Block and inline images honor `imagesdir`, normalize relative targets, and
+  encode spaces as `%20`. Percent-encoded local image and poster targets still
+  load from their corresponding filesystem paths, matching Asciidoctor PDF.
 - Checklist-like prefixes in ordered lists now remain visible text instead of
   rendering as checkboxes, matching Asciidoctor PDF. ACDC continues to accept
   `[X]` in unordered checklists as an intentional extension.

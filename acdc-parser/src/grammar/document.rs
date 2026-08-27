@@ -26,6 +26,7 @@ use crate::{
         inline_preprocessing,
         inline_preprocessor::InlinePreprocessorParserState,
         inline_processing::{adjust_and_log_parse_error, process_inlines},
+        location_walk::walk_document_inline_nodes_mut,
         manpage::{NameSectionAttributes, derive_manpage_header_attrs, derive_name_section_attrs},
         marked_text::MarkedText,
         revision::{IgnoredRevisionFields, RevisionInfo, process_revision_info},
@@ -34,12 +35,12 @@ use crate::{
     model::{
         Caption, CaptionKind, LeveloffsetRange, ListLevel, Locateable, PositionalAttribute,
         SectionKind, SectionLevel, Substitution, caption, section, strip_quotes, substitute,
-        substitution::{HEADER, SubsFlags},
+        substitution::{HEADER, SubstitutionPlan},
     },
 };
 
 #[cfg(feature = "pre-spec-subs")]
-use crate::model::substitution::{NORMAL, parse_subs_attribute};
+use crate::model::substitution::parse_subs_attribute;
 
 use super::helpers::{
     AttributeOrAnchorLine, BlockMetadataLine, BlockParsingMetadata, MacroAttributeContext,
@@ -177,44 +178,22 @@ fn finish_block_parsing_metadata<'input>(
     offset: usize,
 ) -> Result<BlockParsingMetadata<'input>, Error> {
     #[cfg(feature = "pre-spec-subs")]
-    let subs_flags = metadata
+    let substitutions = metadata
         .substitutions
         .as_ref()
-        .map_or(SubsFlags::all(), |spec| {
-            let mut flags = SubsFlags::all();
-            for (flag, sub) in SubsFlags::FLAG_SUBSTITUTIONS {
-                flags.set(*flag, !spec.is_disabled(sub));
-            }
-            let resolved = spec.resolve(NORMAL);
-            let replacements = resolved
-                .iter()
-                .position(|sub| sub == &Substitution::Replacements);
-            let post_replacements = resolved
-                .iter()
-                .position(|sub| sub == &Substitution::PostReplacements);
-            flags.set(SubsFlags::REPLACEMENTS, replacements.is_some());
-            flags.set(SubsFlags::POST_REPLACEMENTS, post_replacements.is_some());
-            flags.set(
-            SubsFlags::REPLACEMENTS_BEFORE_POST_REPLACEMENTS,
-            matches!(
-                (replacements, post_replacements),
-                (Some(replacements), Some(post_replacements)) if replacements < post_replacements
-            ),
-        );
-            flags
-        });
+        .map_or_else(SubstitutionPlan::default, SubstitutionPlan::for_block_spec);
     #[cfg(not(feature = "pre-spec-subs"))]
-    let subs_flags = SubsFlags::all();
-    let hardbreaks = subs_flags.contains(SubsFlags::POST_REPLACEMENTS)
+    let substitutions = SubstitutionPlan::default();
+    let hardbreaks = substitutions.enabled(&Substitution::PostReplacements)
         && (state.hardbreaks || metadata.options.contains(&"hardbreaks"));
     extract_source_attributes(state, &mut metadata);
     extract_quote_attributes(&mut metadata);
-    apply_quote_attribute_substitutions(state, &mut metadata, offset, subs_flags)?;
+    apply_quote_attribute_substitutions(state, &mut metadata, offset, substitutions)?;
     Ok(BlockParsingMetadata {
         metadata,
         title,
         parent_section_level,
-        subs_flags,
+        substitutions,
         hardbreaks,
         discrete,
     })
@@ -518,7 +497,9 @@ fn verbatim_inner<'input>(
         state,
         p.content,
         content_location,
-        block_metadata.subs_flags.contains(SubsFlags::CALLOUTS),
+        block_metadata
+            .substitutions
+            .enabled(&Substitution::Callouts),
     );
     state.last_block_was_verbatim = true;
     state.last_verbatim_callouts = callouts;
@@ -1179,10 +1160,10 @@ fn apply_quote_attribute_substitutions<'input>(
     state: &mut ParserState<'input>,
     metadata: &mut BlockMetadata<'input>,
     offset: usize,
-    subs_flags: SubsFlags,
+    substitutions: SubstitutionPlan,
 ) -> Result<(), Error> {
     let block_metadata = BlockParsingMetadata {
-        subs_flags,
+        substitutions,
         ..BlockParsingMetadata::default()
     };
 
@@ -1292,7 +1273,7 @@ fn parse_reference_label<'a>(
         return None;
     }
     let block_metadata = BlockParsingMetadata {
-        subs_flags: SubsFlags::QUOTES,
+        substitutions: SubstitutionPlan::only(&Substitution::Quotes),
         ..BlockParsingMetadata::default()
     };
     match process_inlines(
@@ -1324,6 +1305,7 @@ fn insert_reference<'a>(
     refs: &mut HashMap<&'a str, Reference<'a>>,
     anchor: &Anchor<'a>,
     title: Option<Title<'a>>,
+    caption: Option<Caption<'a>>,
 ) {
     if refs.contains_key(anchor.id) {
         return;
@@ -1352,6 +1334,7 @@ fn insert_reference<'a>(
             xreflabel,
             title,
             location: anchor.location.clone(),
+            caption,
             bibliography: anchor.is_bibliography(),
             automatic_citation: false,
         },
@@ -1362,6 +1345,32 @@ struct CrossReferenceUse<'a> {
     target: &'a str,
     location: Location,
     automatic: bool,
+}
+
+fn finalize_xref_caption_labels<'a>(state: &ParserState<'a>, document: &mut Document<'a>) {
+    let caption_kinds = document
+        .references
+        .iter()
+        .filter_map(|(target, reference)| {
+            let Caption::Numbered { kind, .. } = reference.caption.as_ref()? else {
+                return None;
+            };
+            Some((*target, *kind))
+        })
+        .collect::<HashMap<_, _>>();
+
+    walk_document_inline_nodes_mut(document, &mut |inline| {
+        let InlineNode::Macro(InlineMacro::CrossReference(xref)) = inline else {
+            return;
+        };
+        let Some(snapshot) = xref.caption_label_snapshot_id.take() else {
+            return;
+        };
+        let Some(kind) = caption_kinds.get(xref.target) else {
+            return;
+        };
+        xref.caption_label = state.xref_caption_label(snapshot, *kind);
+    });
 }
 
 /// Catalog a formatted span's ID and recurse into its inline content.
@@ -1378,6 +1387,7 @@ fn collect_formatted_references<'a, T>(
             xreflabel: None,
             title: None,
             location: text.location().clone(),
+            caption: None,
             bibliography: false,
             automatic_citation: false,
         });
@@ -1402,7 +1412,10 @@ fn collect_references<'a>(
         if !matches!(block, Block::Section(_))
             && let Some(anchor) = block.anchor()
         {
-            insert_reference(state, refs, anchor, block.title().cloned());
+            let caption = block
+                .metadata()
+                .and_then(|metadata| metadata.caption.clone());
+            insert_reference(state, refs, anchor, block.title().cloned(), caption);
         }
 
         match block {
@@ -1422,6 +1435,7 @@ fn collect_references<'a>(
                     xreflabel: parse_reference_label(state, xreflabel, &s.location),
                     title: Some(s.title.clone()),
                     location: s.location.clone(),
+                    caption: None,
                     bibliography: false,
                     automatic_citation: false,
                 });
@@ -1453,7 +1467,7 @@ fn collect_references<'a>(
             Block::DescriptionList(l) => {
                 for item in &l.items {
                     for anchor in &item.anchors {
-                        insert_reference(state, refs, anchor, None);
+                        insert_reference(state, refs, anchor, None, None);
                     }
                     collect_inline_references(state, &item.term, refs, xrefs);
                     collect_inline_references(state, &item.principal_text, refs, xrefs);
@@ -1643,7 +1657,7 @@ fn collect_inline_references<'a>(
 ) {
     for inline in inlines {
         match inline {
-            InlineNode::InlineAnchor(anchor) => insert_reference(state, refs, anchor, None),
+            InlineNode::InlineAnchor(anchor) => insert_reference(state, refs, anchor, None, None),
             InlineNode::Macro(InlineMacro::CrossReference(xref)) => {
                 xrefs.push(CrossReferenceUse {
                     target: xref.target,
@@ -2582,6 +2596,7 @@ peg::parser! {
                         xreflabel,
                         title: Some(entry.title.clone()),
                         location: entry.location.clone(),
+                        caption: None,
                         bibliography: false,
                         automatic_citation: false,
                     },
@@ -2611,7 +2626,7 @@ peg::parser! {
                 }
             }
 
-            Ok(Document {
+            let mut document = Document {
                 header,
                 // Built in preprocessed coordinates with no `file` on either boundary;
                 // the post-parse remap then applies the per-boundary `file` model like
@@ -2631,7 +2646,9 @@ peg::parser! {
                 footnotes: state.footnote_tracker.borrow().footnotes.clone(),
                 toc_entries,
                 references,
-            })
+            };
+            finalize_xref_caption_labels(state, &mut document);
+            Ok(document)
         }
 
         rule prepare_manpage_front_matter()
@@ -2947,7 +2964,8 @@ peg::parser! {
                 tracing::debug!(?author_line, ?substituted, "Processing author line with substitution");
 
                 // Parse the substituted content as authors
-                let mut temp_state = ParserState::for_inline_parsing(substituted, state);
+                let mut temp_state =
+                    ParserState::for_inline_parsing(substituted, state, state.inline_ctx);
 
                 // `asciidoctor` always consumes the line after the title as the author
                 // line; when it doesn't parse as structured "firstname [middle] [last]
@@ -3055,7 +3073,8 @@ peg::parser! {
                 tracing::debug!(?rev_line, ?substituted, "Processing revision line with substitution");
 
                 // Parse the substituted content as revision
-                let mut temp_state = ParserState::for_inline_parsing(substituted, state);
+                let mut temp_state =
+                    ParserState::for_inline_parsing(substituted, state, state.inline_ctx);
 
                 match document_parser::revision(substituted, &mut temp_state) {
                     Ok(()) => {
@@ -6055,9 +6074,11 @@ peg::parser! {
             Ok(format!("{local}@{domain}"))
         }
 
-        /// URL path component - supports query params, fragments, encoding, etc.
-        /// Excludes '[' and ']' to respect AsciiDoc macro/attribute boundaries
-        rule url_path() -> String = path:$(['A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' | ':' | '/' | '?' | '#' | '@' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | '%' | '\\' ]+)
+        /// URL target content following `://`.
+        /// Supports query parameters, fragments, and percent escapes while excluding
+        /// brackets that delimit the macro attributes.
+        /// Spaces must be internal to the target.
+        rule url_path() -> String = path:$(url_path_char() (url_path_char() / internal_url_path_spaces())*)
         {?
             let inline_state = InlinePreprocessorParserState::new_all_enabled(
                 path,
@@ -6080,6 +6101,9 @@ peg::parser! {
             }
             Ok(result)
         }
+
+        rule url_path_char() = ['A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' | ':' | '/' | '?' | '#' | '@' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | '%' | '\\' ]
+        rule internal_url_path_spaces() = [' ']+ &url_path_char()
 
         /// URL for bare autolinks — avoids capturing trailing sentence punctuation
         /// (., ;, !, etc.) by only consuming punctuation when more URL chars follow.
@@ -6154,7 +6178,8 @@ peg::parser! {
         ///
         /// ASCII input uses a conservative filename set. Non-ASCII Unicode characters
         /// are accepted unchanged, and `{`/`}` permit `AsciiDoc` attribute substitution.
-        pub rule path() -> String = path:$(['A'..='Z' | 'a'..='z' | '0'..='9' | '{' | '}' | '_' | '-' | '.' | '/' | '\\' | '\u{80}'..='\u{10FFFF}' ]+)
+        /// Existing percent escapes and internal spaces are preserved.
+        pub rule path() -> String = path:$(path_char() (path_char() / internal_path_spaces())*)
         {?
             let inline_state = InlinePreprocessorParserState::new_all_enabled(
                 path,
@@ -6175,6 +6200,9 @@ peg::parser! {
             }
             Ok(result)
         }
+
+        rule path_char() = ['A'..='Z' | 'a'..='z' | '0'..='9' | '{' | '}' | '_' | '-' | '.' | '/' | '\\' | '%' | '\u{80}'..='\u{10FFFF}' ]
+        rule internal_path_spaces() = [' ']+ &path_char()
 
 
         pub rule source() -> Source<'input>
@@ -7712,7 +7740,12 @@ References.
 
         // Check that the index term was parsed
         let has_index_term = paragraph.content.iter().any(|inline| {
-            matches!(inline, InlineNode::Macro(InlineMacro::IndexTerm(it)) if it.is_visible() && it.term() == "Arthur")
+            matches!(
+                inline,
+                InlineNode::Macro(InlineMacro::IndexTerm(it))
+                    if it.is_visible()
+                        && matches!(it.term(), [InlineNode::PlainText(text)] if text.content == "Arthur")
+            )
         });
 
         assert!(
@@ -7747,7 +7780,12 @@ References.
 
         // Check that the concealed index term was parsed
         let has_concealed_term = paragraph.content.iter().any(|inline| {
-            matches!(inline, InlineNode::Macro(InlineMacro::IndexTerm(it)) if !it.is_visible() && it.term() == "Sword")
+            matches!(
+                inline,
+                InlineNode::Macro(InlineMacro::IndexTerm(it))
+                    if !it.is_visible()
+                        && matches!(it.term(), [InlineNode::PlainText(text)] if text.content == "Sword")
+            )
         });
 
         assert!(
@@ -8296,6 +8334,80 @@ See <<bold-id>>, <<italic-id>>, <<mono-id>>, <<mark-id>>, <<sub-id>>, <<super-id
         );
         // The location points at the anchor on line 1 (for LSP navigation).
         assert_eq!(entry.location.start.line, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn captioned_references_keep_source_order_xrefstyle_and_target_caption() -> Result<(), Error> {
+        let input = "= Caption references\n:xrefstyle: short\n\nShort: <<figure-target>>.\n\n:table-caption: ReferenceTable\n:xrefstyle: full\n\nFull: <<table-target>>.\n\n:xrefstyle: basic\n\nBasic: <<figure-target>>.\n\n:table-caption:\n:xrefstyle: short\n\nNumber only: <<table-target>>.\n\n:table-caption!:\n\nTarget label: <<table-target>>.\n\n:table-caption: TargetTable\n\n[[figure-target]]\n.A figure\nimage::figure.svg[]\n\n[[table-target]]\n.A table\n|===\n|Cell\n|===\n";
+        let mut state = ParserState::new_for_test(input);
+        let doc = document_parser::document(input, &mut state)??;
+        let xrefs = doc
+            .blocks
+            .iter()
+            .filter_map(|block| {
+                let Block::Paragraph(paragraph) = block else {
+                    return None;
+                };
+                paragraph.content.iter().find_map(|inline| {
+                    let InlineNode::Macro(InlineMacro::CrossReference(xref)) = inline else {
+                        return None;
+                    };
+                    Some((xref.target, xref.xrefstyle, xref.caption_label))
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            xrefs,
+            [
+                (
+                    "figure-target",
+                    crate::XrefStyle::Short,
+                    crate::XrefCaptionLabel::AtTarget,
+                ),
+                (
+                    "table-target",
+                    crate::XrefStyle::Full,
+                    crate::XrefCaptionLabel::AtReference("ReferenceTable"),
+                ),
+                (
+                    "figure-target",
+                    crate::XrefStyle::Basic,
+                    crate::XrefCaptionLabel::AtTarget,
+                ),
+                (
+                    "table-target",
+                    crate::XrefStyle::Short,
+                    crate::XrefCaptionLabel::NumberOnly,
+                ),
+                (
+                    "table-target",
+                    crate::XrefStyle::Short,
+                    crate::XrefCaptionLabel::AtTarget,
+                ),
+            ]
+        );
+        assert!(matches!(
+            doc.references
+                .get("figure-target")
+                .and_then(|reference| reference.caption.as_ref()),
+            Some(Caption::Numbered {
+                kind: CaptionKind::Figure,
+                label,
+                number: Some(number),
+            }) if label == "Figure" && number.get() == 1
+        ));
+        assert!(matches!(
+            doc.references
+                .get("table-target")
+                .and_then(|reference| reference.caption.as_ref()),
+            Some(Caption::Numbered {
+                kind: CaptionKind::Table,
+                label,
+                number: Some(number),
+            }) if label == "TargetTable" && number.get() == 1
+        ));
         Ok(())
     }
 

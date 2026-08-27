@@ -241,4 +241,35 @@ mod tests {
             .with_variant(MarkdownVariant::CommonMark);
         assert_eq!(processor.variant(), MarkdownVariant::CommonMark);
     }
+
+    #[test]
+    fn media_targets_honor_imagesdir_and_encode_spaces() -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = acdc_parser::parse(
+            ":imagesdir: media library\n\nimage::poster file.png[]\n\nimage::already%20encoded.png[]\n\nInline image:inline poster.png[].\n\naudio::clips/demo track.mp3[]\n\nvideo::clips/demo clip.mp4[]\n",
+            &acdc_parser::Options::default(),
+        )?;
+        let processor = Processor::new(Options::default(), parsed.document().attributes.clone());
+        let source = processor.warning_source();
+        let mut warnings = Vec::new();
+        let mut diagnostics = Diagnostics::new(&source, &mut warnings);
+        let mut output = Vec::new();
+
+        processor.write_to(parsed.document(), &mut output, None, None, &mut diagnostics)?;
+
+        let markdown = String::from_utf8(output)?;
+        for target in [
+            "](media%20library/poster%20file.png)",
+            "](media%20library/already%20encoded.png)",
+            "](media%20library/inline%20poster.png)",
+            "[Audio: media%20library/clips/demo%20track.mp3](media%20library/clips/demo%20track.mp3)",
+            "[Video: media%20library/clips/demo%20clip.mp4](media%20library/clips/demo%20clip.mp4)",
+        ] {
+            assert!(markdown.contains(target), "missing {target}: {markdown}");
+        }
+        assert!(
+            !markdown.contains("%2520"),
+            "double-encoded target: {markdown}"
+        );
+        Ok(())
+    }
 }

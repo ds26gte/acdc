@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-reference macros preserve formatted explicit text through supported
+  nested inline macros and escaped closing brackets. Empty cross-references
+  also expose the `xrefstyle` and caption-label selection in effect at their
+  source position; captioned targets expose the resolved label and number
+  needed for `short` and `full` automatic reference text.
 - Parsed tables expose their resolved `frame`, `grid`, and `stripes`
   presentation. Table-level values override `table-frame`, `table-grid`, and
   `table-stripes`, and document-attribute changes apply in source order. The
@@ -131,8 +136,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The public `NORMAL` substitution list and parsed `[subs=normal]` metadata now
-  put quotes before attributes, matching Asciidoctor's substitution order.
+- **Breaking:** index terms now expose substituted `InlineNode` collections
+  instead of source strings through `IndexTermKind` and its accessors.
+  `InlineMacro::IndexTerm` now contains a boxed `IndexTerm`, and serialized
+  `term`, `secondary`, and `tertiary` values are inline-node arrays.
+- Substitutions now follow their written order when attribute values introduce
+  formatting or macro syntax. The public `NORMAL` order and `[subs=normal]`
+  now put quotes before attributes, matching Asciidoctor.
 - A trailing `^` in URL, link, and mailto display text now sets
   `window=_blank` and is omitted from the text, matching Asciidoctor.
 - Parsed URL, link, and autolink nodes report whether fallback display text
@@ -274,11 +284,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its closing delimiter to be reported as an unterminated new block. Most
   likely to surface when a paragraph is immediately followed (no blank line)
   by a delimited block.
+- Block image, audio, and video macros and inline image macros accept local and
+  remote targets with internal spaces, as well as already percent-encoded local
+  targets. Leading and trailing target whitespace remains invalid, matching
+  Asciidoctor.
+- Index-term inline nodes preserve their source locations inside passthroughs
+  and formatted spans.
 - Inline passthroughs apply `c`, `q`, `a`, `r`, `m`, and `p` substitutions in
   the written order. The `n` and `v` groups use Asciidoctor's inline
   passthrough policies. Escaped passthroughs stay literal, ordered substitutions
-  can create hard line breaks across attribute references, and expanded values
-  keep valid source locations.
+  can create hard line breaks across attribute references, expanded values keep
+  valid source locations, and `parse_inline` accepts pass macros without a
+  substitution-name list, including an empty pass body.
 - Description lists now preserve repeated continuations, delimiter-based
   nesting, formatted terms, trailing unanswered Q&A items, titled-list
   boundaries, and named `style=` values, matching Asciidoctor.

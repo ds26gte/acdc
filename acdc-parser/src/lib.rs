@@ -129,7 +129,7 @@ pub use model::{
     Substitution, Subtitle, Superscript, Table, TableColumn, TableFrame, TableGrid,
     TableOfContents, TablePresentation, TableRow, TableStripes, ThematicBreak, Title, TocEntry,
     UNNUMBERED_SECTION_STYLES, UnorderedList, Url, VERBATIM, Verbatim, VerticalAlignment, Video,
-    strip_quotes, substitute,
+    XrefCaptionLabel, XrefStyle, strip_quotes, substitute,
 };
 #[cfg(feature = "pre-spec-subs")]
 pub use model::{SubstitutionOp, SubstitutionSpec};
@@ -522,7 +522,10 @@ pub fn parse_inline(input: &str, options: &Options<'_>) -> Result<ParseInlineRes
         state.document_attributes = Rc::new(options_owned.document_attributes.clone());
         state.options = Rc::new(options_owned);
         state.initialize_hardbreaks();
-        state.inline_ctx.hardbreaks = state.hardbreaks;
+        state
+            .inline_ctx
+            .rules
+            .set(grammar::InlineRules::HARD_BREAKS, state.hardbreaks);
         state.warnings = warnings_for_state;
         let result = match grammar::inline_parser::inlines(&owner.source, &mut state) {
             Ok(mut inlines) => {
@@ -610,6 +613,26 @@ mod tests {
                 ]
             ));
         }
+    }
+
+    #[test]
+    fn parse_inline_accepts_pass_macros_without_substitution_names() {
+        let parsed = parse_inline("pass:[raw] pass:[]", &Options::default())
+            .expect("parse pass macros without substitution names");
+        let [
+            InlineNode::Macro(InlineMacro::Pass(with_content)),
+            InlineNode::PlainText(separator),
+            InlineNode::Macro(InlineMacro::Pass(empty)),
+        ] = parsed.inlines()
+        else {
+            panic!("expected two pass macros, got {:?}", parsed.inlines());
+        };
+
+        assert_eq!(with_content.text, Some("raw"));
+        assert!(with_content.substitutions.is_empty());
+        assert_eq!(separator.content, " ");
+        assert_eq!(empty.text, Some(""));
+        assert!(empty.substitutions.is_empty());
     }
 
     #[test]

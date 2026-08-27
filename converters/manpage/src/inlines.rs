@@ -100,7 +100,11 @@ impl<W: Write> ManpageVisitor<'_, '_, W> {
         } else {
             text
         };
-        let content = transform_plain(content, self, self.text_boundaries);
+        let mut content = transform_plain(content, self, self.text_boundaries);
+        if self.text_boundaries.at_paragraph_end() && text.ends_with("--") && content.ends_with(' ')
+        {
+            content.to_mut().pop();
+        }
         let content = apply_text_case(content, self.text_case);
         let escaped = manify(&content, EscapeMode::Normalize);
         let w = self.writer_mut();
@@ -412,7 +416,7 @@ impl<W: Write> ManpageVisitor<'_, '_, W> {
         // guard both outlive the `&mut self` render calls.
         let references = Rc::clone(&self.processor.references);
         let guard = self.processor.xref_guard.clone();
-        match resolve_xref(references.get(xref.target), xref.target, &guard) {
+        match resolve_xref(references.get(xref.target), xref, &guard) {
             // A reference to a level-1 section reads as that section's `.SH`
             // heading, which manpages upper-case. An explicit label reads as
             // written.
@@ -425,6 +429,20 @@ impl<W: Write> ManpageVisitor<'_, '_, W> {
                 self.with_text_case(text_case, |visitor| visitor.visit_inline_nodes(inlines))
             }
             XrefDisplay::Label(inlines, _scope) => self.visit_inline_nodes(inlines),
+            XrefDisplay::ShortCaption(prefix) => {
+                let text = manify(&prefix, EscapeMode::Normalize);
+                write!(self.writer_mut(), "{text}")?;
+                Ok(())
+            }
+            XrefDisplay::FullCaption(prefix, inlines, _scope) => {
+                let prefix = manify(&prefix, EscapeMode::Normalize);
+                let separator = manify(", “", EscapeMode::Normalize);
+                write!(self.writer_mut(), "{prefix}{separator}")?;
+                self.visit_inline_nodes(inlines)?;
+                let closing_quote = manify("”", EscapeMode::Normalize);
+                write!(self.writer_mut(), "{closing_quote}")?;
+                Ok(())
+            }
             XrefDisplay::Fallback(text)
             | XrefDisplay::Unresolved(text)
             | XrefDisplay::Nested(text) => {
@@ -456,9 +474,8 @@ impl<W: Write> ManpageVisitor<'_, '_, W> {
             }
 
             InlineMacro::Icon(icon) => {
-                // Icon - show target name in brackets
-                let w = self.writer_mut();
-                write!(w, "[{}]", icon.target)?;
+                let alt = acdc_converters_core::icon::alt(&icon.target, &icon.attributes);
+                write!(self.writer_mut(), "[{alt}]")?;
             }
 
             InlineMacro::Keyboard(kbd) => {
@@ -504,13 +521,9 @@ impl<W: Write> ManpageVisitor<'_, '_, W> {
             }
 
             InlineMacro::IndexTerm(it) => {
-                // Flow terms (visible): output the term text
-                // Concealed terms (hidden): output nothing
                 if it.is_visible() {
-                    let w = self.writer_mut();
-                    write!(w, "{}", manify(it.term(), EscapeMode::Normalize))?;
+                    self.visit_inline_nodes(it.term())?;
                 }
-                // Concealed terms produce no output - they're only for index generation
             }
 
             InlineMacro::Footnote(_)

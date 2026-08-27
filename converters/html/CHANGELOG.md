@@ -14,13 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-references preserve formatted explicit text through supported nested
+  inline macros. Empty references to captioned blocks honor source-order
+  `xrefstyle=basic`, `short`, and `full`, including custom and disabled
+  captions, matching Asciidoctor.
+- Visible index terms and opt-in generated index labels preserve inline
+  formatting and attribute substitutions, matching Asciidoctor.
+- Inline icon macros use their explicit alternative text or a readable form of
+  their target in text and image modes. Image icons honor `iconsdir`,
+  `icontype`, and format values such as `icons=svg`, matching Asciidoctor.
 - Inline passthroughs now honor special-character, quote, attribute,
   replacement, macro, and post-replacement policies, including their written
   order and the `normal` and `verbatim` groups. Escaped delimiters, numeric
   character references, and hard line breaks match Asciidoctor.
-- Ordered lists honor a positive `start` value, including on nested lists.
-  Standard HTML also keeps roles on unordered-list wrappers, matching
-  Asciidoctor.
+- Ordered lists honor a positive `start` value and the `%reversed` option,
+  including on nested lists. Standard HTML also keeps roles on unordered-list
+  wrappers, matching Asciidoctor.
 - Tables honor source-order changes to `table-frame`, `table-grid`, and
   `table-stripes`. Local `frame`, `grid`, and `stripes` values still override
   the document defaults, including `stripes=hover`, matching Asciidoctor.
@@ -254,6 +263,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Image, audio, video, and video poster targets honor `imagesdir`, normalize
+  relative paths, and encode spaces as `%20`, matching Asciidoctor.
 - Link fallback text keeps `mailto:` for a `link:` target, escapes URL
   ampersands, uses angle brackets only around bracketed email autolinks, and
   maps inter-document references to the HTML output suffix, matching

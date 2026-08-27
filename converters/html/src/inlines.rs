@@ -49,8 +49,9 @@ use std::{
 };
 
 use acdc_converters_core::{
-    inlines_to_string,
+    InlineTextTransform, inlines_to_string,
     link::{autolink_fallback, link_fallback, mailto_fallback},
+    media::resolve_target,
     substitutions::{
         Replacements, TextBoundaries, restore_escaped_patterns, strip_backslash_escapes,
     },
@@ -60,40 +61,13 @@ use acdc_converters_core::{
 use acdc_parser::{
     AttributeValue, Autolink, Bold, Button, CalloutRef, CrossReference, CurvedApostrophe,
     CurvedQuotation, ElementAttributes, Footnote, Form, Highlight, Icon, Image, IndexTerm,
-    IndexTermKind, InlineMacro, InlineNode, Italic, Keyboard, Link, Mailto, Menu, Monospace, Pass,
-    Plain, Raw, Stem, StemNotation, Subscript, Substitution, Superscript, Url, Verbatim,
-    parse_text_for_quotes, strip_quotes, substitute,
+    InlineMacro, InlineNode, Italic, Keyboard, Link, Mailto, Menu, Monospace, Pass, Plain, Raw,
+    Stem, StemNotation, Subscript, Substitution, Superscript, Url, Verbatim, parse_text_for_quotes,
+    strip_quotes, substitute,
 };
 
-/// Leak a `&str` into a `&'static str` so index term kinds can be cached
-/// beyond the parser arena's lifetime.
-///
-/// Leaks are bounded by the number of index entries encountered during a
-/// single conversion run — acceptable for short-lived converter processes.
-fn leak_str(s: &str) -> &'static str {
-    Box::leak(s.to_string().into_boxed_str())
-}
-
-/// Convert a borrowed `IndexTermKind` to one with `'static` lifetime.
-fn index_term_kind_to_static(kind: &IndexTermKind<'_>) -> IndexTermKind<'static> {
-    match kind {
-        IndexTermKind::Flow(t) => IndexTermKind::Flow(leak_str(t)),
-        IndexTermKind::Concealed {
-            term,
-            secondary,
-            tertiary,
-        } => IndexTermKind::Concealed {
-            term: leak_str(term),
-            secondary: secondary.map(leak_str),
-            tertiary: tertiary.map(leak_str),
-        },
-        // IndexTermKind is non_exhaustive
-        _ => IndexTermKind::Flow(""),
-    }
-}
-
 use crate::{
-    Error, HtmlVisitor, RenderOptions,
+    Error, HtmlVisitor, IndexTermLabel, RenderOptions,
     constants::{encode_html_entities, escape_ampersands},
     icon::write_icon,
     image::image_link_control_attributes,
@@ -842,6 +816,10 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
 
     fn render_inline_image(&mut self, i: &Image<'_>) -> Result<(), Error> {
         let is_semantic = self.processor.variant() == crate::HtmlVariant::Semantic;
+        let source = escape_href(&resolve_target(
+            &i.source.to_string(),
+            self.processor.document_attributes(),
+        ));
         let w = self.writer_mut();
         // Inline images use a span wrapper (not in semantic mode)
         if !is_semantic {
@@ -868,7 +846,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             )?;
         }
 
-        write!(w, "<img src=\"{}\" alt=\"{alt_text}\"", i.source)?;
+        write!(w, "<img src=\"{source}\" alt=\"{alt_text}\"")?;
         write_dimension_attributes(w, &i.metadata)?;
         if let Some(title) = i.metadata.attributes.get("title") {
             write!(w, " title=\"{title}\"")?;
@@ -1054,7 +1032,8 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
     ) -> Result<(), Error> {
         if xref.text.is_empty() {
             // Resolve via the id -> reference map (sections + titled blocks):
-            // xreflabel (from [[id,Custom Text]]) > target title > fallback `[id]`.
+            // xreflabel (from [[id,Custom Text]]) > caption style or target title >
+            // fallback `[id]`.
             //
             // Reference text — a title or an xreflabel — goes through the inline
             // pipeline, so its formatting (`<code>`, bold, italic, ...) survives
@@ -1067,7 +1046,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             let processor = Rc::clone(&self.processor);
             let display = resolve_xref(
                 processor.references.get(xref.target),
-                xref.target,
+                xref,
                 &processor.xref_guard,
             );
 
@@ -1103,6 +1082,16 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
                     for inline in inlines {
                         self.render_inline_node(inline, options, subs)?;
                     }
+                }
+                XrefDisplay::ShortCaption(prefix) => {
+                    write!(self.writer_mut(), "{}", escape_pcdata(&prefix))?;
+                }
+                XrefDisplay::FullCaption(prefix, inlines, _scope) => {
+                    write!(self.writer_mut(), "{}, &#8220;", escape_pcdata(&prefix))?;
+                    for inline in inlines {
+                        self.render_inline_node(inline, options, subs)?;
+                    }
+                    write!(self.writer_mut(), "&#8221;")?;
                 }
                 XrefDisplay::Fallback(text)
                 | XrefDisplay::Unresolved(text)
@@ -1258,8 +1247,19 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         // label — only when index generation is enabled (`:acdc-index:` + a
         // last `[index]` section).
         if !options.toc_mode && self.processor.generate_index() {
+            let primary = self.render_index_term_label(it.term(), options, subs)?;
+            let secondary = it
+                .secondary()
+                .map(|inlines| self.render_index_term_label(inlines, options, subs))
+                .transpose()?;
+            let tertiary = it
+                .tertiary()
+                .map(|inlines| self.render_index_term_label(inlines, options, subs))
+                .transpose()?;
             let anchor_id = self.processor.clone().add_index_entry(
-                index_term_kind_to_static(&it.kind),
+                primary,
+                secondary,
+                tertiary,
                 self.current_section_title.clone(),
             );
             write!(self.writer_mut(), "<a id=\"{anchor_id}\"></a>")?;
@@ -1268,10 +1268,36 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         // Flow terms (visible): also output the term text.
         // Concealed terms: no visible text.
         if it.is_visible() {
-            let text = substitution_text(it.term(), subs, options, self.text_boundaries());
-            write!(self.writer_mut(), "{text}")?;
+            for inline in it.term() {
+                self.render_inline_node(inline, options, subs)?;
+            }
         }
         Ok(())
+    }
+
+    fn render_index_term_label(
+        &mut self,
+        inlines: &[InlineNode<'_>],
+        options: &RenderOptions,
+        subs: &[Substitution],
+    ) -> Result<IndexTermLabel, Error> {
+        let mut catalog_options = options.clone();
+        catalog_options.toc_mode = true;
+        let mut visitor = HtmlVisitor::new(
+            Vec::new(),
+            Rc::clone(&self.processor),
+            catalog_options.clone(),
+            self.diagnostics.reborrow(),
+        );
+        visitor.current_subs = subs.to_vec();
+        for inline in inlines {
+            visitor.render_inline_node(inline, &catalog_options, subs)?;
+        }
+        let html = String::from_utf8(visitor.into_writer()).map_err(io::Error::other)?;
+        Ok(IndexTermLabel {
+            plain: InlineTextTransform::default().to_string(inlines),
+            html,
+        })
     }
 }
 

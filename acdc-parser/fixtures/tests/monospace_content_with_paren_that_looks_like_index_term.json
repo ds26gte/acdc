@@ -30,7 +30,23 @@
             {
               "name": "indexterm",
               "type": "inline",
-              "term": "a)(a",
+              "term": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "value": "a)(a",
+                  "location": [
+                    {
+                      "line": 1,
+                      "col": 5
+                    },
+                    {
+                      "line": 1,
+                      "col": 8
+                    }
+                  ]
+                }
+              ],
               "visible": true,
               "location": [
                 {

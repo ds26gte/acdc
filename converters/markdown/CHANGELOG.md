@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-references preserve formatted explicit text through supported nested
+  inline macros. Empty references to captioned blocks honor source-order
+  `xrefstyle=basic`, `short`, and `full`, including custom and disabled
+  captions.
+- Visible index terms preserve inline formatting, links, and attribute
+  substitutions; concealed terms remain hidden.
 - Ordered lists honor a positive `start` value, including on nested lists.
   Every line of a nested list remains indented. Unsupported alphabetic and
   Roman styles continue to produce a warning and use numeric markers.
@@ -44,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Image destinations and audio and video fallback links honor `imagesdir`,
+  normalize relative paths, and encode spaces as `%20`.
 - Markdown output now uses one blank line between blocks and one final newline,
   without redundant spacing around quotes and nested lists.
 - Description-list fallbacks now indent nested levels and preserve repeated

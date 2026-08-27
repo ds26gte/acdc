@@ -119,7 +119,7 @@ impl<'t, 'd> InlineTextTransform<'t, 'd> {
             InlineMacro::Autolink(autolink) => write!(w, "{}", autolink.url),
             InlineMacro::CrossReference(xref) => self.write_xref_text(w, xref),
             InlineMacro::IndexTerm(index_term) if index_term.is_visible() => {
-                w.write_str(index_term.term())
+                self.write(w, index_term.term())
             }
             InlineMacro::Pass(pass) => w.write_str(pass.text.unwrap_or_default()),
             InlineMacro::Keyboard(keyboard) => write!(w, "{}", keyboard.keys.join("+")),
@@ -143,7 +143,9 @@ impl<'t, 'd> InlineTextTransform<'t, 'd> {
                 }
                 w.write_char(']')
             }
-            InlineMacro::Icon(icon) => write!(w, "[{}]", icon.target),
+            InlineMacro::Icon(icon) => {
+                write!(w, "[{}]", crate::icon::alt(&icon.target, &icon.attributes))
+            }
             InlineMacro::Footnote(footnote) => write!(w, "[{}]", footnote.number),
             InlineMacro::Stem(stem) => w.write_str(stem.content),
             InlineMacro::IndexTerm(_) | _ => Ok(()),

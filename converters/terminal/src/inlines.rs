@@ -4,7 +4,7 @@ use std::io::Write;
 #[cfg(feature = "pre-spec-subs")]
 use acdc_converters_core::substitutions::apply_replacements;
 use acdc_converters_core::{
-    decode_numeric_char_refs, inlines_to_string,
+    Diagnostics, InlineTextTransform, WarningSource, decode_numeric_char_refs, inlines_to_string,
     substitutions::{Replacements, TextBoundaries},
     visitor::{Visitor, WritableVisitor},
     xref::{XrefDisplay, resolve_xref},
@@ -15,7 +15,7 @@ use crossterm::{
     style::{Attribute, Color, Print, PrintStyledContent, SetAttribute, Stylize},
 };
 
-use crate::{Error, Processor};
+use crate::{Error, IndexTermEntry, IndexTermLabel, Processor};
 
 /// Apply Unicode typography replacements to a `PlainText` leaf.
 ///
@@ -184,6 +184,22 @@ fn render_inline_nodes_to_owned(
     buffer.flush()?;
     // SAFETY: We only write valid UTF-8 through write! macros and plain text from parser
     Ok(String::from_utf8(buffer.into_inner()?)?)
+}
+
+fn render_inline_nodes_with_styles_to_owned(
+    nodes: &[InlineNode],
+    processor: &Processor<'_>,
+) -> Result<String, Error> {
+    let source = WarningSource::new("terminal");
+    let mut warnings = Vec::new();
+    let mut visitor = crate::TerminalVisitor::new(
+        Vec::new(),
+        processor.clone(),
+        Diagnostics::new(&source, &mut warnings),
+    );
+    visitor.text_boundaries = TextBoundaries::NONE;
+    visitor.visit_inline_nodes(nodes)?;
+    Ok(String::from_utf8(visitor.into_writer())?)
 }
 
 /// Helper to render a single inline node directly to a writer.
@@ -372,11 +388,23 @@ impl<W: Write> crate::TerminalVisitor<'_, '_, W> {
 
         match resolve_xref(
             processor.references.get(xref.target),
-            xref.target,
+            xref,
             &processor.xref_guard,
         ) {
             XrefDisplay::Title(inlines, _scope) | XrefDisplay::Label(inlines, _scope) => {
                 self.write_link_styled(processor, |visitor| visitor.visit_inline_nodes(inlines))
+            }
+            XrefDisplay::ShortCaption(prefix) => self.write_link_styled(processor, |visitor| {
+                write!(visitor.writer_mut(), "{prefix}")?;
+                Ok(())
+            }),
+            XrefDisplay::FullCaption(prefix, inlines, _scope) => {
+                self.write_link_styled(processor, |visitor| {
+                    write!(visitor.writer_mut(), "{prefix}, “")?;
+                    visitor.visit_inline_nodes(inlines)?;
+                    write!(visitor.writer_mut(), "”")?;
+                    Ok(())
+                })
             }
             XrefDisplay::Fallback(text) | XrefDisplay::Unresolved(text) => {
                 self.write_link_styled(processor, |visitor| {
@@ -596,8 +624,8 @@ fn render_inline_macro_to_writer<W: Write + ?Sized>(
             write!(w, "[Image: {}]", img.source)?;
         }
         InlineMacro::Icon(icon) => {
-            // Terminal can't display icons, show icon name
-            write!(w, "[Icon: {}]", icon.target)?;
+            let alt = acdc_converters_core::icon::alt(&icon.target, &icon.attributes);
+            write!(w, "[Icon: {alt}]")?;
         }
         InlineMacro::Keyboard(kbd) => {
             // Show keyboard shortcuts with brackets
@@ -622,13 +650,24 @@ fn render_inline_macro_to_writer<W: Write + ?Sized>(
             write!(w, "[{}]", stem.content)?;
         }
         InlineMacro::IndexTerm(it) => {
-            // Collect entry for index catalog rendering
-            processor.add_index_entry(&it.kind);
+            let render_label = |inlines: &[InlineNode]| -> Result<IndexTermLabel, Error> {
+                Ok(IndexTermLabel {
+                    plain: InlineTextTransform::default().to_string(inlines),
+                    rendered: render_inline_nodes_with_styles_to_owned(inlines, processor)?,
+                })
+            };
+            processor.add_index_entry(IndexTermEntry {
+                primary: render_label(it.term())?,
+                secondary: it.secondary().map(render_label).transpose()?,
+                tertiary: it.tertiary().map(render_label).transpose()?,
+            });
 
-            // Flow terms (visible): output the term text
-            // Concealed terms (hidden): output nothing
             if it.is_visible() {
-                write!(w, "{}", it.term())?;
+                write!(
+                    w,
+                    "{}",
+                    render_inline_nodes_with_styles_to_owned(it.term(), processor)?
+                )?;
             }
         }
         _ => {
@@ -674,12 +713,17 @@ fn render_cross_reference_to_writer<W: Write + ?Sized>(
     let text = if xref.text.is_empty() {
         match resolve_xref(
             processor.references.get(xref.target),
-            xref.target,
+            xref,
             &processor.xref_guard,
         ) {
             XrefDisplay::Title(inlines, _scope) | XrefDisplay::Label(inlines, _scope) => {
                 render_inline_nodes_to_owned(inlines, processor)?
             }
+            XrefDisplay::ShortCaption(prefix) => prefix,
+            XrefDisplay::FullCaption(prefix, inlines, _scope) => format!(
+                "{prefix}, “{}”",
+                render_inline_nodes_to_owned(inlines, processor)?
+            ),
             XrefDisplay::Fallback(text)
             | XrefDisplay::Unresolved(text)
             | XrefDisplay::Nested(text) => text,

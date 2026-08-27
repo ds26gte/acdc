@@ -33,6 +33,7 @@ The backend currently renders:
 * automatic, preamble, and macro-placed tables of contents, including custom titles and depth
 * bold, italic, monospace, highlight, subscript, and superscript text
 * links, cross-references, footnotes, inline anchors, and common UI macros
+* visible and concealed index terms with generated, page-linked index catalogs
 * ordered, unordered, description, checklist, and callout lists
 * tables with widths, page placement, semantic repeating headers, column/row spans, frames, grids, and row stripes
 * admonitions, quotes, thematic breaks, and page breaks
@@ -40,17 +41,41 @@ The backend currently renders:
 * listing and literal blocks with themed monospace presentation
 * collapsible examples as expanded disclosures with their full content visible
 * local, remote, and `data:` URI images in block and inline positions
+* static audio and video fallbacks with clickable source links and linked video posters
 * a configurable page theme, header logo, watermark, footer, and page size
 
 == Known limitations
 
 The backend is intentionally incomplete.
-Inline icons, audio, video, and stem notation use escaped textual fallbacks.
+Stem notation uses an escaped textual fallback.
 Source-language syntax highlighting and AsciiMath/LaTeX translation are not yet implemented.
+
+Audio and video blocks render as static media fallbacks because PDF cannot play
+embedded media through the HTML controls.
+Each source is a clickable link with a media label, and block titles render as
+captions below the fallback, matching Asciidoctor PDF.
+Local media links use `imagesdir`; playback options such as start and end times,
+autoplay, looping, and controls do not affect the static result.
+When a video has an available `poster`, the poster is linked to the first video
+source and any additional sources remain as separate links.
+Poster loading follows the same safe-mode, network, size, and strict-asset rules
+as document images, but playable media is never fetched.
+The converter emits one warning per document when it uses a static media fallback.
+
+Inline icons use text when `icons` is unset, bundled Unicode glyphs when
+`icons=font`, and files from `iconsdir` for other set values.
+The glyph mode covers common directional and status icons rather than the full
+Font Awesome catalog used by Asciidoctor PDF; an unknown name uses its text
+alternative.
 
 PDF output cannot preserve interactive open and closed states.
 Examples marked `%collapsible` always render expanded with a disclosure marker and their title, or `Details` when untitled.
 The `%open` and `%closed` options therefore produce the same PDF output.
+
+Normal page breaks do not add a blank page when they occur at an existing page
+boundary; add `%always` to force another page. The `page-layout` attribute and
+the `portrait` and `landscape` roles do not change page orientation. The output
+keeps the configured document layout.
 
 Asciidoctor PDF's default theme renders the first laid-out line of an abstract in bold italic.
 ACDC uses a consistent italic weight for the full abstract body because Typst cannot style a line after layout.
@@ -76,6 +101,24 @@ Native side wrapping is tracked in https://github.com/typst/typst/issues/5181[Ty
 
 Raw inline passthrough content is always emitted through Typst's escaped text boundary.
 Unlike Asciidoctor PDF, backend-specific markup in `+++...+++` or `pass:[]` is displayed literally and cannot execute Typst code.
+
+== Index catalogs
+
+Add an `[index]` section to generate a catalog from all index terms that occur before that section.
+Visible `((term))` and `indexterm2:[term]` forms remain in the document.
+Concealed `(((primary, secondary, tertiary)))` and `indexterm:[primary, secondary, tertiary]` forms appear only in the catalog.
+
+For screen media, each page number links to the exact term occurrence.
+The default screen sequence lists every occurrence.
+Set `:index-pagenum-sequence-style: page` to list each page once, or set it to `range` to combine consecutive pages.
+For non-screen media, the catalog ignores that sequence setting and emits unlinked, unique page numbers with contiguous ranges, matching Asciidoctor PDF.
+An empty index section is omitted, and content inside an index section is ignored, matching Asciidoctor PDF.
+
+The bundled theme uses two columns with a 12 pt gap.
+Use `[index%notitle]` to hide the visible section heading.
+The `index.columns` and `index.column_gap_pt` theme tokens set the column count and gap.
+Set `index.columns` to `1` for a single-column catalog.
+In a custom theme, a `null` or omitted `index.column_gap_pt` uses the body font size.
 
 == Document language
 

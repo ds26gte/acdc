@@ -6,6 +6,7 @@ mod color;
 mod error;
 mod fonts;
 mod heading;
+mod index;
 mod spacing;
 mod syntax;
 mod table;
@@ -20,6 +21,7 @@ pub use color::Palette;
 pub use error::Error;
 pub use fonts::{EMOJI_FONT_FAMILY, embedded_fonts};
 pub use heading::{ChapterHeading, Heading, PageBreakBefore, PartBreakAfter, PartHeading};
+pub use index::Index;
 pub use spacing::Spacing;
 pub use syntax::{HIGHLIGHT_THEME_PATH, highlight_theme};
 pub use table::{Table, TableAlignment};
@@ -38,6 +40,8 @@ pub struct Theme {
     pub caption: Caption,
     #[serde(default)]
     pub heading: Heading,
+    #[serde(default)]
+    pub index: Index,
     #[serde(default)]
     pub table: Table,
 }
@@ -64,6 +68,7 @@ impl Theme {
         self.caption.validate()?;
         self.typography.validate()?;
         self.spacing.validate()?;
+        self.index.validate()?;
         self.table.validate()
     }
 }
@@ -93,8 +98,12 @@ mod tests {
         let theme = Theme::from_yaml_str(DEFAULT_THEME_YAML)?;
         assert_eq!(theme.palette.page_bg, "#ffffff");
         assert_eq!(theme.typography.body_font.fallback, ["IBM Plex Serif"]);
+        assert!((theme.typography.code_size_em - 0.8).abs() < f64::EPSILON);
+        assert!((theme.typography.code_min_size_em - 0.6).abs() < f64::EPSILON);
         assert_eq!(theme.caption, Caption::default());
         assert_eq!(theme.heading, Heading::default());
+        assert_eq!(theme.index.columns, 2);
+        assert_eq!(theme.index.column_gap_pt, Some(12.0));
         assert_eq!(theme.table, Table::default());
         assert_eq!(Theme::default(), theme);
         Ok(())
@@ -175,6 +184,47 @@ mod tests {
     }
 
     #[test]
+    fn accepts_index_column_layout() -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = DEFAULT_THEME_YAML
+            .replace("  columns: 2", "  columns: 3")
+            .replace("  column_gap_pt: 12.0", "  column_gap_pt: 18.5");
+
+        let theme = Theme::from_yaml_str(&yaml)?;
+
+        assert_eq!(theme.index.columns, 3);
+        assert_eq!(theme.index.column_gap_pt, Some(18.5));
+        Ok(())
+    }
+
+    #[test]
+    fn defaults_index_layout_when_omitted() -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = DEFAULT_THEME_YAML.replace("index:\n  columns: 2\n  column_gap_pt: 12.0\n", "");
+
+        let theme = Theme::from_yaml_str(&yaml)?;
+
+        assert_eq!(theme.index, Index::default());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_index_layout() {
+        for (original, replacement, field) in [
+            ("columns: 2", "columns: 0", "index.columns"),
+            (
+                "column_gap_pt: 12.0",
+                "column_gap_pt: -.inf",
+                "index.column_gap_pt",
+            ),
+        ] {
+            let result = Theme::from_yaml_str(&DEFAULT_THEME_YAML.replace(original, replacement));
+            assert!(
+                matches!(&result, Err(Error::Validation { field: actual, .. }) if actual == field),
+                "unexpected result for {field}: {result:?}",
+            );
+        }
+    }
+
+    #[test]
     fn rejects_invalid_table_alignment() {
         let yaml = DEFAULT_THEME_YAML.replace("table:\n  align: left", "table:\n  align: diagonal");
 
@@ -188,6 +238,19 @@ mod tests {
         let theme = Theme::from_yaml_str(&yaml)?;
 
         assert!((theme.spacing.block_margin_bottom_pt - 12.0).abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn defaults_code_sizes_when_omitted() -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = DEFAULT_THEME_YAML
+            .replace("  code_size_em: 0.8\n", "")
+            .replace("  code_min_size_em: 0.6\n", "");
+
+        let theme = Theme::from_yaml_str(&yaml)?;
+
+        assert!((theme.typography.code_size_em - 0.8).abs() < f64::EPSILON);
+        assert!((theme.typography.code_min_size_em - 0.6).abs() < f64::EPSILON);
         Ok(())
     }
 
@@ -302,6 +365,21 @@ mod tests {
                 "body_size_pt: 11.0",
                 "body_size_pt: 0",
                 "typography.body_size_pt",
+            ),
+            (
+                "code_size_em: 0.8",
+                "code_size_em: .nan",
+                "typography.code_size_em",
+            ),
+            (
+                "code_min_size_em: 0.6",
+                "code_min_size_em: 0",
+                "typography.code_min_size_em",
+            ),
+            (
+                "code_min_size_em: 0.6",
+                "code_min_size_em: 0.9",
+                "typography.code_min_size_em",
             ),
             (
                 "tracking_em: 0.0",

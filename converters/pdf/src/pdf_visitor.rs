@@ -7,10 +7,12 @@ use acdc_converters_core::substitutions::{SubsFlags, apply_replacements, effecti
 use acdc_converters_core::{
     Diagnostics, Doctype, InlineTextTransform,
     code::{SourceLineOptions, detect_language, source_line_count},
+    icon::{IconMode, alt as icon_alt, image_source as icon_image_source},
     inlines_to_string,
     link::{autolink_fallback, link_fallback, mailto_fallback},
     list::OrderedListNumbering,
     section::effective_section_level,
+    shows_block_title,
     substitutions::{Replacements, TextBoundaries},
     table::{CellKind, GridRow, build_grid, determine_column_count},
     toc::{Config as TocConfig, NumberingConfig, effective_level, has_real_parts, section_numbers},
@@ -19,10 +21,11 @@ use acdc_converters_core::{
 };
 use acdc_parser::{
     Anchor, AttributeValue, Autolink, Block, BlockMetadata, Caption, CaptionKind, ColumnStyle,
-    ColumnWidth, CrossReference, DescriptionList, DescriptionListItem, ElementAttributes,
-    HorizontalAlignment, Image, IndexTermKind, InlineMacro, InlineNode, ListItem, Menu, Paragraph,
-    Raw, Section, SectionKind, Substitution, Table, TableColumn, TableFrame, TableGrid,
-    TableOfContents, TablePresentation, TableStripes, Title, TocEntry, VerticalAlignment,
+    ColumnWidth, CrossReference, DelimitedBlock, DelimitedBlockType, DescriptionList,
+    DescriptionListItem, ElementAttributes, HorizontalAlignment, Icon, Image, IndexTerm,
+    InlineMacro, InlineNode, ListItem, Location, Menu, Paragraph, Raw, Section, SectionKind,
+    Source, Substitution, Table, TableColumn, TableFrame, TableGrid, TableOfContents,
+    TablePresentation, TableStripes, Title, TocEntry, VerticalAlignment,
 };
 use acdc_pdf_images::ImageMap;
 use acdc_pdf_theme::{
@@ -33,6 +36,9 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::{
     Error, Processor, encode_bibliography_reference_label, encode_footnote_label, encode_label,
+    has_autofit_option,
+    index::{CatalogTerm, IndexCatalog, PageSequenceStyle},
+    warn_with_advice_at,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -79,6 +85,30 @@ enum BlockImageAlignment {
     Right,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnorderedMarker {
+    Disc,
+    Circle,
+    Square,
+    None,
+    NoBullet,
+    Unstyled,
+}
+
+impl UnorderedMarker {
+    fn from_style(style: &str) -> Option<Self> {
+        match style {
+            "disc" => Some(Self::Disc),
+            "circle" => Some(Self::Circle),
+            "square" => Some(Self::Square),
+            "none" => Some(Self::None),
+            "no-bullet" => Some(Self::NoBullet),
+            "unstyled" => Some(Self::Unstyled),
+            _ => None,
+        }
+    }
+}
+
 impl BlockImageAlignment {
     fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -111,15 +141,27 @@ pub(crate) struct PdfVisitor<'a, 'd, 'm> {
     page_width_pt: f64,
     pub(crate) chapter_signifier: Option<String>,
     pub(crate) list_depth: usize,
+    pub(crate) unordered_list_depth: usize,
     pub(crate) in_inline_span: bool,
+    pre_wrap_depth: usize,
     pub(crate) in_article_abstract: bool,
+    pub(crate) automatic_preamble_lead_state: AutomaticPreambleLeadState,
     table_cell_section_state: TableCellSectionState,
     pub(crate) doctype: Doctype,
     book_page_break_state: BookPageBreakState,
+    pub(crate) explicit_page_break_state: ExplicitPageBreakState,
     text_boundaries: TextBoundaries,
     toc_entries: Vec<TocEntry<'a>>,
     toc_written: bool,
+    populated_index_sections: HashSet<String>,
     bibliography_backlinks_written: HashSet<String>,
+    unsupported_metadata_warnings: HashSet<&'static str>,
+    ordered_unstyled_scope_depth: usize,
+    unordered_style_scope_depth: usize,
+    static_media_warning: StaticMediaWarningState,
+    index_catalog: IndexCatalog,
+    index_columns: usize,
+    index_column_gap_pt: f64,
 }
 
 #[derive(PartialEq, Eq)]
@@ -127,6 +169,27 @@ enum BookPageBreakState {
     Disabled,
     Enabled,
     AfterPart,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub(crate) enum ExplicitPageBreakState {
+    #[default]
+    Inactive,
+    Weak,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub(crate) enum AutomaticPreambleLeadState {
+    #[default]
+    Inactive,
+    Pending,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum StaticMediaWarningState {
+    #[default]
+    Pending,
+    Emitted,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -159,6 +222,12 @@ struct TableCellPosition {
     y: usize,
     is_header: bool,
     is_footer: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InlineSpanState {
+    wrappers: usize,
+    pre_wrap: bool,
 }
 
 impl ParagraphAlignment {
@@ -227,16 +296,59 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             page_width_pt,
             chapter_signifier,
             list_depth: 0,
+            unordered_list_depth: 0,
             in_inline_span: false,
+            pre_wrap_depth: 0,
             in_article_abstract: false,
+            automatic_preamble_lead_state: AutomaticPreambleLeadState::Inactive,
             table_cell_section_state: TableCellSectionState::Outside,
             doctype,
             book_page_break_state,
+            explicit_page_break_state: ExplicitPageBreakState::Inactive,
             text_boundaries: TextBoundaries::BOTH,
             toc_entries,
             toc_written: false,
+            populated_index_sections: HashSet::new(),
             bibliography_backlinks_written: HashSet::new(),
+            unsupported_metadata_warnings: HashSet::new(),
+            ordered_unstyled_scope_depth: 0,
+            unordered_style_scope_depth: 0,
+            static_media_warning: StaticMediaWarningState::Pending,
+            index_catalog: IndexCatalog::default(),
+            index_columns: theme.index.columns,
+            index_column_gap_pt: theme
+                .index
+                .column_gap_pt
+                .unwrap_or(theme.typography.body_size_pt),
         }
+    }
+
+    pub(crate) fn with_populated_index_sections(mut self, sections: HashSet<String>) -> Self {
+        self.populated_index_sections = sections;
+        self
+    }
+
+    pub(crate) fn index_section_is_populated(&self, id: &str) -> bool {
+        self.populated_index_sections.contains(id)
+    }
+
+    pub(crate) fn write_index_catalog(&mut self) {
+        let sequence_style = PageSequenceStyle::from_attributes(
+            self.processor
+                .document_attributes()
+                .get_string("index-pagenum-sequence-style")
+                .as_deref(),
+            self.processor
+                .document_attributes()
+                .get_string("media")
+                .as_deref(),
+        );
+        self.index_catalog.write(
+            &mut self.writer,
+            sequence_style,
+            self.index_columns,
+            self.index_column_gap_pt,
+        );
     }
 
     pub(crate) fn section_break_before(&mut self, section: &Section<'_>) -> bool {
@@ -299,6 +411,16 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         }
 
         self.toc_written = true;
+        let suppress_header =
+            toc_macro.is_some_and(|toc| toc.metadata.options.contains(&"noheader"));
+        let suppress_footer =
+            toc_macro.is_some_and(|toc| toc.metadata.options.contains(&"nofooter"));
+        match (suppress_header, suppress_footer) {
+            (true, true) => self.writer.raw("#page(header: none, footer: none)[\n"),
+            (true, false) => self.writer.raw("#page(header: none)[\n"),
+            (false, true) => self.writer.raw("#page(footer: none)[\n"),
+            (false, false) => {}
+        }
         if let Some(title) = config.title().filter(|title| !title.is_empty()) {
             self.writer
                 .raw("#heading(outlined: false, bookmarked: false)[");
@@ -329,6 +451,10 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 hidden_article_abstract_level = Some(entry.level);
                 continue;
             }
+            if entry.kind == SectionKind::Index && !self.populated_index_sections.contains(entry.id)
+            {
+                continue;
+            }
             if entry.level > config.levels() {
                 continue;
             }
@@ -354,10 +480,13 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             if let Some(number) = number {
                 self.write_text_expr(&number);
             }
-            self.write_title(&entry.title)?;
+            self.write_title_without_recording_index_terms(&entry.title)?;
             self.writer.raw("])\n");
         }
         self.writer.raw("#pagebreak()\n\n");
+        if suppress_header || suppress_footer {
+            self.writer.raw("]\n\n");
+        }
         Ok(())
     }
 
@@ -368,11 +497,126 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         Ok(())
     }
 
+    pub(crate) fn write_delimited_block_content(
+        &mut self,
+        block: &DelimitedBlock<'_>,
+    ) -> Result<(), Error> {
+        let fallback = CaptionKind::for_delimited(&block.inner, block.metadata.style);
+        let collapsible_example = is_collapsible_example(&block.metadata, fallback);
+        let zero_width_table = matches!(block.inner, DelimitedBlockType::DelimitedTable(_))
+            && self.omit_zero_width_table(&block.metadata);
+        if zero_width_table {
+            return Ok(());
+        }
+        let table = matches!(block.inner, DelimitedBlockType::DelimitedTable(_));
+        let intrinsic_table =
+            table && !block.title.is_empty() && Self::table_has_intrinsic_width(&block.metadata);
+        if intrinsic_table {
+            self.write_intrinsic_table_start();
+        }
+        let (sized_table, aligned_table) =
+            self.write_table_wrappers_start(&block.metadata, table && !intrinsic_table);
+        let writes_own_title = matches!(block.inner, DelimitedBlockType::DelimitedSidebar(_))
+            || matches!(block.inner, DelimitedBlockType::DelimitedOpen(_))
+                && block.metadata.style == Some("abstract")
+            || collapsible_example;
+        // A block built through the API carries no resolved caption, so classify it with
+        // the same rules the parser used.
+        let captioned = block.metadata.caption.is_some() || fallback.is_some();
+        if shows_block_title(&block.inner) && !writes_own_title && !intrinsic_table {
+            let sticky_title = table
+                && block.metadata.options.contains(&"breakable")
+                && !block.metadata.options.contains(&"unbreakable")
+                && !block.title.is_empty();
+            if sticky_title {
+                self.writer
+                    .raw("#block(sticky: true, above: 0pt, below: 0pt)[\n");
+            }
+            if captioned {
+                self.write_captioned_title(&block.title, &block.metadata, fallback)?;
+            } else {
+                self.write_block_title(&block.title)?;
+            }
+            if sticky_title {
+                self.writer.raw("]\n");
+            }
+        }
+        let result = match &block.inner {
+            DelimitedBlockType::DelimitedExample(blocks)
+            | DelimitedBlockType::DelimitedOpen(blocks)
+                if collapsible_example =>
+            {
+                self.write_disclosure(&block.title, |visitor| visitor.write_blocks(blocks))
+            }
+            // Each container reads differently in print: an example takes a
+            // light frame, a sidebar a shaded box, and an open block is a
+            // transparent container that takes neither.
+            DelimitedBlockType::DelimitedExample(blocks) => self.write_example(blocks),
+            DelimitedBlockType::DelimitedSidebar(blocks) => {
+                self.write_sidebar(&block.title, blocks)
+            }
+            DelimitedBlockType::DelimitedOpen(blocks)
+                if block.metadata.style == Some("abstract") =>
+            {
+                self.write_abstract(Some(&block.title), &block.metadata, |visitor| {
+                    visitor.write_blocks(blocks)
+                })
+            }
+            DelimitedBlockType::DelimitedOpen(blocks) => {
+                self.write_framed_blocks(None, None, blocks)
+            }
+            DelimitedBlockType::DelimitedQuote(blocks) => {
+                self.write_quote_block(&block.metadata, |visitor| visitor.write_blocks(blocks))
+            }
+            DelimitedBlockType::DelimitedVerse(nodes) => {
+                self.write_verse_block(nodes, &block.metadata)
+            }
+            DelimitedBlockType::DelimitedListing(nodes)
+            | DelimitedBlockType::DelimitedLiteral(nodes) => {
+                self.write_verbatim_block(nodes, &block.metadata);
+                Ok(())
+            }
+            DelimitedBlockType::DelimitedPass(nodes) => {
+                self.write_passthrough_block(nodes);
+                Ok(())
+            }
+            DelimitedBlockType::DelimitedTable(table) => self.write_table(table, &block.metadata),
+            DelimitedBlockType::DelimitedStem(stem) => {
+                self.write_stem_fallback(
+                    stem.content,
+                    true,
+                    block.metadata.location.as_ref().or(Some(&block.location)),
+                );
+                Ok(())
+            }
+            DelimitedBlockType::DelimitedComment(_) => Ok(()),
+            _ => {
+                self.warn_unsupported_parser_variant("delimited block", Some(&block.location));
+                Ok(())
+            }
+        };
+        if intrinsic_table {
+            self.write_intrinsic_table_end(&block.title, &block.metadata, fallback)?;
+        }
+        self.write_table_wrappers_end(sized_table, aligned_table);
+        result
+    }
+
     pub(crate) fn write_title(&mut self, title: &Title<'_>) -> Result<(), Error> {
         if !title.is_empty() {
             self.write_inlines(title.as_ref())?;
         }
         Ok(())
+    }
+
+    fn write_title_without_recording_index_terms(
+        &mut self,
+        title: &Title<'_>,
+    ) -> Result<(), Error> {
+        let previous = self.index_catalog.set_suspended(true);
+        let result = self.write_title(title);
+        self.index_catalog.set_suspended(previous);
+        result
     }
 
     pub(crate) fn write_inlines(&mut self, nodes: &[InlineNode<'_>]) -> Result<(), Error> {
@@ -480,12 +724,13 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         &mut self,
         id: Option<&str>,
         role: Option<&str>,
-    ) -> usize {
+    ) -> InlineSpanState {
         if let Some(id) = id {
             let _ = write!(self.writer, "#metadata(none) <{}>", crate::encode_label(id));
         }
 
         let mut wrappers = 0;
+        let mut pre_wrap = false;
         for role in role.into_iter().flat_map(str::split_whitespace) {
             let prefix = match role {
                 "line-through" => Some("#strike["),
@@ -493,6 +738,10 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 "overline" => Some("#overline["),
                 "big" => Some("#text(size: 1.2em)["),
                 "small" => Some("#text(size: 0.8em)["),
+                "pre-wrap" => {
+                    pre_wrap = true;
+                    None
+                }
                 _ => None,
             };
             if let Some(prefix) = prefix {
@@ -506,13 +755,19 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 wrappers += 1;
             }
         }
-        wrappers
+        self.pre_wrap_depth += usize::from(pre_wrap);
+        InlineSpanState { wrappers, pre_wrap }
     }
 
-    pub(crate) fn write_inline_span_end(&mut self, wrappers: usize) {
-        for _ in 0..wrappers {
+    pub(crate) fn write_inline_span_end(&mut self, state: InlineSpanState) {
+        for _ in 0..state.wrappers {
             self.writer.raw("]");
         }
+        self.pre_wrap_depth -= usize::from(state.pre_wrap);
+    }
+
+    pub(crate) fn normalize_prose_whitespace<'text>(&self, text: &'text str) -> Cow<'text, str> {
+        prose_whitespace(text, self.pre_wrap_depth > 0)
     }
 
     pub(crate) fn write_plain(&mut self, text: &str) {
@@ -525,7 +780,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         );
         #[cfg(not(feature = "pre-spec-subs"))]
         let text = Cow::Owned(Replacements::unicode().transform(text, self.text_boundaries));
-        let text = collapse_source_whitespace(&text);
+        let text = prose_whitespace(&text, self.pre_wrap_depth > 0);
         self.write_text_expr(&acdc_converters_core::decode_numeric_char_refs(&text));
     }
 
@@ -563,7 +818,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             }
         }
 
-        let text = collapse_source_whitespace(&text);
+        let text = prose_whitespace(&text, self.pre_wrap_depth > 0);
         if applied_special_chars {
             self.write_text_expr(&text);
         } else {
@@ -579,11 +834,11 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         nodes: &[InlineNode<'_>],
         suffix: &str,
     ) -> Result<(), Error> {
-        let wrappers = self.write_inline_span_start(id, role);
+        let state = self.write_inline_span_start(id, role);
         self.writer.raw(prefix);
         self.write_inlines(nodes)?;
         self.writer.raw(suffix);
-        self.write_inline_span_end(wrappers);
+        self.write_inline_span_end(state);
         Ok(())
     }
 
@@ -636,6 +891,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         &mut self,
         para: &Paragraph<'_>,
         write_title: bool,
+        automatic_lead: bool,
     ) -> Result<(), Error> {
         #[cfg(feature = "pre-spec-subs")]
         let previous_subs = self.processor.current_subs.replace(effective_subs_flags(
@@ -671,7 +927,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                     self.write_block_title(&para.title)?;
                 }
             }
-            self.write_paragraph_body(para)
+            self.write_paragraph_body(para, automatic_lead)
         })();
 
         #[cfg(feature = "pre-spec-subs")]
@@ -750,6 +1006,42 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         Ok(())
     }
 
+    fn write_paragraph_roles_start(
+        &mut self,
+        metadata: &BlockMetadata<'_>,
+        automatic_lead: bool,
+    ) -> usize {
+        let mut wrappers = 0;
+        if automatic_lead {
+            self.writer.raw("#text(size: 1.25em)[");
+            wrappers += 1;
+        }
+        for role in &metadata.roles {
+            let prefix = match *role {
+                "lead" => Some("#text(size: 1.25em)["),
+                "big" => Some("#text(size: 1.2em)["),
+                "small" => Some("#text(size: 0.8em)["),
+                "subtitle" => {
+                    Some("#text(size: 0.8em, style: \"italic\", fill: rgb(\"#999999\"))[")
+                }
+                "underline" => Some("#underline["),
+                "line-through" => Some("#strike["),
+                _ => None,
+            };
+            if let Some(prefix) = prefix {
+                self.writer.raw(prefix);
+                wrappers += 1;
+            }
+        }
+        wrappers
+    }
+
+    fn write_paragraph_roles_end(&mut self, wrappers: usize) {
+        for _ in 0..wrappers {
+            self.writer.raw("]");
+        }
+    }
+
     pub(crate) fn write_quote_block(
         &mut self,
         metadata: &BlockMetadata<'_>,
@@ -791,7 +1083,11 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
     /// A `[quote]`, `[verse]`, `[literal]`, `[listing]`, `[source]`, or
     /// `[example]` paragraph reads as its delimited counterpart, matching
     /// `asciidoctor`.
-    fn write_paragraph_body(&mut self, para: &Paragraph<'_>) -> Result<(), Error> {
+    fn write_paragraph_body(
+        &mut self,
+        para: &Paragraph<'_>,
+        automatic_lead: bool,
+    ) -> Result<(), Error> {
         match para.metadata.style {
             Some("quote") => self.write_quote_block(&para.metadata, |visitor| {
                 visitor.write_paragraph_alignment(&para.metadata, |visitor| {
@@ -815,9 +1111,15 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 visitor.writer.raw("\n]");
                 Ok(())
             }),
-            _ => self.write_aligned_paragraph_body(&para.metadata, |visitor| {
-                visitor.write_inlines(&para.content)
-            }),
+            _ => {
+                let wrappers = self.write_paragraph_roles_start(&para.metadata, automatic_lead);
+                self.write_paragraph_alignment(&para.metadata, |visitor| {
+                    visitor.write_inlines(&para.content)
+                })?;
+                self.write_paragraph_roles_end(wrappers);
+                self.writer.raw("\n\n");
+                Ok(())
+            }
         }
     }
 
@@ -939,13 +1241,48 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         nodes: &[InlineNode<'_>],
         metadata: &BlockMetadata<'_>,
     ) {
+        if metadata.options.contains(&"mixed") && self.source_language(metadata) == Some("php") {
+            self.warn_unsupported_once(
+                "php-mixed-highlighting",
+                "PHP source block mixed-mode highlighting is not supported by the PDF backend; rendering with Typst's normal PHP highlighter",
+                "Use the `html+php` source language when it gives acceptable highlighting, or use Asciidoctor PDF for explicit `%mixed` highlighting.",
+                metadata.location.as_ref(),
+            );
+        }
         let tab_size = self.code_tab_size(metadata);
         let source = self.code_text(nodes, tab_size);
+        let autofit = has_autofit_option(metadata, self.processor.document_attributes());
         let options = if self.source_highlighting_enabled() {
             SourceLineOptions::resolve(metadata, &source)
         } else {
             SourceLineOptions::default()
         };
+        if autofit {
+            if options.is_empty() {
+                self.write_autofit_open(&source, metadata, 0);
+                self.write_raw_block(&source, metadata);
+                self.writer.raw("]\n\n");
+                return;
+            }
+
+            let source_lines = (1..=source_line_count(&source)).collect::<Vec<_>>();
+            if source_lines.is_empty() {
+                self.write_autofit_open(&source, metadata, 0);
+                self.write_raw_block(&source, metadata);
+                self.writer.raw("]\n\n");
+                return;
+            }
+            let extra_width_tenths = if options.line_number_start.is_some() {
+                source_gutter_tenths(&source, &options).saturating_add(8)
+            } else {
+                0
+            };
+            self.write_autofit_open(&source, metadata, extra_width_tenths);
+            self.write_source_block_with_line_options(&source, &source_lines, metadata, &options);
+            self.writer.raw("]\n\n");
+            return;
+        }
+
         let wrap_columns = self
             .table_cell_code_wrap_columns()
             .unwrap_or(self.code_wrap_columns);
@@ -962,6 +1299,29 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             return;
         }
         self.write_source_block_with_line_options(&source, &source_lines, metadata, &options);
+    }
+
+    fn write_autofit_open(
+        &mut self,
+        source: &str,
+        metadata: &BlockMetadata<'_>,
+        extra_width_tenths: usize,
+    ) {
+        self.writer.raw("#_acdc_autofit_code(");
+        self.writer.string_literal(source);
+        if let Some(language) = self.source_language(metadata) {
+            self.writer.raw(", language: ");
+            self.writer.string_literal(language);
+        }
+        if extra_width_tenths > 0 {
+            let _ = write!(
+                self.writer,
+                ", extra-width: {}.{}em",
+                extra_width_tenths / 10,
+                extra_width_tenths % 10
+            );
+        }
+        self.writer.raw(")[\n");
     }
 
     fn write_raw_block(&mut self, source: &str, metadata: &BlockMetadata<'_>) {
@@ -991,10 +1351,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         }
         self.writer.raw(")\n");
 
-        let gutter_tenths = options.line_number_start.map_or(0, |start| {
-            let last = start.saturating_add(source_line_count(source).saturating_sub(1));
-            last.to_string().len().saturating_mul(6)
-        });
+        let gutter_tenths = source_gutter_tenths(source, options);
         let _ = writeln!(
             self.writer,
             "  let gutter = {}.{}em",
@@ -1139,8 +1496,13 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         self.writer.string_literal(text);
     }
 
-    pub(crate) fn write_stem_fallback(&mut self, content: &str, block: bool) {
-        self.warn_unsupported("stem content", "rendering it as literal text");
+    pub(crate) fn write_stem_fallback(
+        &mut self,
+        content: &str,
+        block: bool,
+        location: Option<&Location>,
+    ) {
+        self.warn_unsupported("stem content", "rendering it as literal text", location);
         if block {
             self.writer.raw("#block[");
         }
@@ -1176,11 +1538,97 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         Ok(())
     }
 
-    pub(crate) fn warn_unsupported(&mut self, feature: &str, fallback: &str) {
-        self.diagnostics.warn_with_advice(
+    pub(crate) fn warn_unsupported(
+        &mut self,
+        feature: &str,
+        fallback: &str,
+        location: Option<&Location>,
+    ) {
+        warn_with_advice_at(
+            &mut self.diagnostics,
+            location,
             format!("{feature} is not yet supported by the PDF backend, {fallback}"),
             "Use the HTML backend or Asciidoctor PDF for this feature until PDF backend support is added.",
         );
+    }
+
+    pub(crate) fn warn_unsupported_once(
+        &mut self,
+        key: &'static str,
+        message: impl Into<Cow<'static, str>>,
+        advice: impl Into<Cow<'static, str>>,
+        location: Option<&Location>,
+    ) {
+        if self.unsupported_metadata_warnings.insert(key) {
+            warn_with_advice_at(&mut self.diagnostics, location, message, advice);
+        }
+    }
+
+    pub(crate) fn warn_unsupported_parser_variant(
+        &mut self,
+        node_kind: &str,
+        location: Option<&Location>,
+    ) {
+        warn_with_advice_at(
+            &mut self.diagnostics,
+            location,
+            format!("an unsupported parser {node_kind} variant was omitted from PDF output"),
+            "Use the HTML backend or Asciidoctor PDF for this document and report the unsupported construct.",
+        );
+    }
+
+    pub(crate) fn warn_static_media_fallback(&mut self, location: &Location) {
+        if self.static_media_warning == StaticMediaWarningState::Emitted {
+            return;
+        }
+        self.static_media_warning = StaticMediaWarningState::Emitted;
+        warn_with_advice_at(
+            &mut self.diagnostics,
+            Some(location),
+            "interactive media playback is unavailable in static PDF output; rendering clickable source links",
+            "Use the HTML backend when in-document playback is required.",
+        );
+    }
+
+    pub(crate) fn write_static_media_link(&mut self, target: &str, kind: &str) {
+        self.write_text_expr("►\u{a0}");
+        self.writer.raw("#link(");
+        self.writer.string_literal(target);
+        self.writer.raw(")[");
+        self.write_text_expr(target);
+        self.writer.raw("]");
+        self.write_text_expr(" ");
+        self.writer.raw("#emph[");
+        self.write_text_expr(&format!("({kind})"));
+        self.writer.raw("]");
+    }
+
+    pub(crate) fn static_media_source_target(&self, source: &Source<'_>) -> String {
+        self.static_media_target(source.to_string().as_str())
+    }
+
+    pub(crate) fn static_media_target(&self, target: &str) -> String {
+        acdc_converters_core::media::resolve_target(target, self.processor.document_attributes())
+    }
+
+    pub(crate) fn has_asset(&self, target: &str) -> bool {
+        self.assets.get(target).is_some()
+    }
+
+    pub(crate) fn asset_virtual_path(&self, target: &str) -> Option<String> {
+        self.assets
+            .get(target)
+            .map(|asset| asset.virtual_path.clone())
+    }
+
+    pub(crate) fn write_static_media_caption(&mut self, title: &Title<'_>) -> Result<(), Error> {
+        if title.is_empty() {
+            return Ok(());
+        }
+        self.writer.raw("#imagecaption[");
+        self.write_title(title)?;
+        self.writer.raw("]\n");
+        Ok(())
     }
 
     pub(crate) fn write_list_item(
@@ -1520,20 +1968,36 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
     }
 
     pub(crate) fn write_ordered_list_start(&mut self, metadata: &BlockMetadata<'_>, marker: &str) {
-        let numbering = match metadata.style {
-            Some(style) => OrderedListNumbering::from_explicit_style(style).unwrap_or_default(),
-            None => match marker.matches('.').count() {
-                2 => OrderedListNumbering::LowerAlpha,
-                3 => OrderedListNumbering::LowerRoman,
-                4 => OrderedListNumbering::UpperAlpha,
-                5 => OrderedListNumbering::UpperRoman,
-                _ => OrderedListNumbering::Arabic,
-            },
-        };
         let indent = "  ".repeat(self.list_depth);
         let _ = writeln!(self.writer, "{indent}#[");
         let _ = write!(self.writer, "{indent}#set enum(numbering: ");
-        self.write_ordered_list_numbering(numbering);
+        let markerless = matches!(
+            metadata.style,
+            Some("none" | "no-bullet" | "unnumbered" | "unstyled")
+        );
+        if metadata.style == Some("none") {
+            self.writer.raw("(..numbers) => box(width: 0.5em)[]");
+        } else if markerless {
+            self.writer.raw("(..numbers) => none");
+        } else {
+            let numbering = match metadata.style {
+                Some(style) => OrderedListNumbering::from_explicit_style(style).unwrap_or_default(),
+                None => match marker.matches('.').count() {
+                    2 => OrderedListNumbering::LowerAlpha,
+                    3 => OrderedListNumbering::LowerRoman,
+                    4 => OrderedListNumbering::UpperAlpha,
+                    5 => OrderedListNumbering::UpperRoman,
+                    _ => OrderedListNumbering::Arabic,
+                },
+            };
+            self.write_ordered_list_numbering(numbering);
+        }
+        if metadata.style == Some("unstyled") {
+            self.writer.raw(", body-indent: 0pt");
+            self.ordered_unstyled_scope_depth += 1;
+        } else if self.ordered_unstyled_scope_depth > 0 {
+            self.writer.raw(", body-indent: 0.5em");
+        }
         if let Some(start) = metadata
             .attributes
             .get_string("start")
@@ -1542,7 +2006,100 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         {
             let _ = write!(self.writer, ", start: {start}");
         }
+        if metadata.options.contains(&"reversed") {
+            self.writer.raw(", reversed: true");
+        }
         self.writer.raw(")\n");
+    }
+
+    pub(crate) fn write_ordered_list_end(&mut self, metadata: &BlockMetadata<'_>) {
+        if metadata.style == Some("unstyled") {
+            self.ordered_unstyled_scope_depth -= 1;
+        }
+    }
+
+    pub(crate) fn write_unordered_list_start(&mut self, metadata: &BlockMetadata<'_>) -> bool {
+        if metadata.options.contains(&"checklist") {
+            return false;
+        }
+        let style = metadata.style.and_then(UnorderedMarker::from_style);
+        let resets_parent_style = style.is_none() && self.unordered_style_scope_depth > 0;
+        if style.is_none() && !resets_parent_style {
+            return false;
+        }
+
+        let indent = "  ".repeat(self.list_depth);
+        let _ = writeln!(self.writer, "{indent}#[");
+        let _ = write!(self.writer, "{indent}#set list(marker: ");
+        if let Some(style) = style {
+            let _ = write!(
+                self.writer,
+                "depth => if depth == {} {{ ",
+                self.unordered_list_depth
+            );
+            self.write_unordered_marker(style);
+            self.writer.raw(" } else { let markers = ");
+            self.write_default_unordered_markers();
+            self.writer
+                .raw("; markers.at(calc.rem(depth, markers.len())) }");
+        } else {
+            self.write_default_unordered_markers();
+        }
+        if style == Some(UnorderedMarker::Unstyled) {
+            self.writer.raw(", body-indent: 0pt");
+        } else if self.unordered_style_scope_depth > 0 {
+            self.writer.raw(", body-indent: 0.5em");
+        }
+        self.writer.raw(")\n");
+        self.unordered_style_scope_depth += 1;
+        true
+    }
+
+    pub(crate) fn write_unordered_list_end(&mut self) {
+        self.unordered_style_scope_depth -= 1;
+    }
+
+    fn write_default_unordered_markers(&mut self) {
+        self.writer.raw("(");
+        for (index, style) in [
+            UnorderedMarker::Disc,
+            UnorderedMarker::Circle,
+            UnorderedMarker::Square,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index > 0 {
+                self.writer.raw(", ");
+            }
+            self.write_unordered_marker(style);
+        }
+        self.writer.raw(")");
+    }
+
+    fn write_unordered_marker(&mut self, style: UnorderedMarker) {
+        match style {
+            UnorderedMarker::Disc => {
+                self.writer
+                    .raw("box(baseline: -0.2em, circle(radius: 0.14em, fill: rgb(");
+                self.writer.string_literal(&self.palette.bullet);
+                self.writer.raw(")))");
+            }
+            UnorderedMarker::Circle => {
+                self.writer
+                    .raw("box(baseline: -0.2em, circle(radius: 0.13em, stroke: 0.6pt + rgb(");
+                self.writer.string_literal(&self.palette.bullet);
+                self.writer.raw(")))");
+            }
+            UnorderedMarker::Square => {
+                self.writer
+                    .raw("box(baseline: -0.2em, rect(width: 0.24em, height: 0.24em, fill: rgb(");
+                self.writer.string_literal(&self.palette.bullet);
+                self.writer.raw(")))");
+            }
+            UnorderedMarker::None => self.writer.raw("box(width: 0.28em)[]"),
+            UnorderedMarker::NoBullet | UnorderedMarker::Unstyled => self.writer.raw("none"),
+        }
     }
 
     fn write_ordered_list_numbering(&mut self, numbering: OrderedListNumbering) {
@@ -1674,6 +2231,16 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         true
     }
 
+    pub(crate) fn write_table_wrappers_start(
+        &mut self,
+        metadata: &BlockMetadata<'_>,
+        enabled: bool,
+    ) -> (bool, bool) {
+        let aligned = enabled && self.write_table_alignment_start(metadata);
+        let sized = enabled && self.write_table_width_start(metadata);
+        (sized, aligned)
+    }
+
     pub(crate) fn table_has_intrinsic_width(metadata: &BlockMetadata<'_>) -> bool {
         metadata.options.contains(&"autowidth")
             && table_width(metadata).is_none()
@@ -1696,7 +2263,17 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             "]\nalign({}, [\n#context block(width: measure(acdc-table-body).width)[",
             typst_table_alignment(alignment)
         );
+        let sticky_title = metadata.options.contains(&"breakable")
+            && !metadata.options.contains(&"unbreakable")
+            && !title.is_empty();
+        if sticky_title {
+            self.writer
+                .raw("#block(sticky: true, above: 0pt, below: 0pt)[\n");
+        }
         self.write_captioned_title(title, metadata, fallback)?;
+        if sticky_title {
+            self.writer.raw("]\n");
+        }
         self.writer.raw("]\n#acdc-table-body\n])\n}\n\n");
         Ok(())
     }
@@ -1717,8 +2294,11 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         if table_width(metadata) != Some(0) {
             return false;
         }
-        self.diagnostics.warn(
+        warn_with_advice_at(
+            &mut self.diagnostics,
+            metadata.location.as_ref(),
             "cannot fit contents of table cell into a table with a width of 0%; omitting the table",
+            "Set the table width to a value greater than 0% to include it in the PDF.",
         );
         true
     }
@@ -1972,13 +2552,14 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             self.warn_unsupported(
                 "block image side wrapping",
                 "rendering the image on the requested side with following content below it",
+                Some(&image.location),
             );
         }
         let has_caption = !image.title.is_empty();
         if has_caption {
             self.writer.raw("#block(width: 100%, breakable: false)[\n");
         }
-        let source = image.source.to_string();
+        let source = self.static_media_source_target(&image.source);
         let alt = block_image_alt(image);
         let link = image
             .metadata
@@ -1988,7 +2569,9 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         if let Some(asset) = self.assets.get(&source) {
             let width = image_width(&image.metadata, true);
             let alignment = block_image_alignment(&image.metadata);
-            let uses_doc_image = alignment == BlockImageAlignment::Left
+            let align_to_page = image.metadata.options.contains(&"align-to-page");
+            let uses_doc_image = !align_to_page
+                && alignment == BlockImageAlignment::Left
                 && matches!(
                     width,
                     None | Some(
@@ -2027,6 +2610,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                     width,
                     alignment,
                     link.as_deref(),
+                    align_to_page,
                 );
             }
         } else {
@@ -2067,23 +2651,36 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         width: Option<ImageWidth>,
         alignment: BlockImageAlignment,
         link: Option<&str>,
+        align_to_page: bool,
     ) {
-        let clip = matches!(
-            width,
-            None | Some(
-                ImageWidth::Points {
-                    constrain_to_bounds: true,
-                    ..
-                } | ImageWidth::ContainerRatio {
-                    constrain_to_bounds: true,
-                    ..
-                }
-            )
-        );
+        let clip = !align_to_page
+            && matches!(
+                width,
+                None | Some(
+                    ImageWidth::Points {
+                        constrain_to_bounds: true,
+                        ..
+                    } | ImageWidth::ContainerRatio {
+                        constrain_to_bounds: true,
+                        ..
+                    }
+                )
+            );
+        if align_to_page {
+            self.writer
+                .raw("#context layout(available => move(dx: -here().position().x, ");
+        }
+        let block_prefix = if align_to_page { "" } else { "#" };
         let _ = write!(
             self.writer,
-            "#block(width: 100%, radius: {}pt, clip: {clip})[",
-            self.image_radius_pt,
+            "{block_prefix}block(width: {}{}, radius: {}pt, clip: {clip})[",
+            if align_to_page {
+                self.page_width_pt
+            } else {
+                100.0
+            },
+            if align_to_page { "pt" } else { "%" },
+            self.image_radius_pt
         );
         if alignment != BlockImageAlignment::Left {
             let _ = write!(self.writer, "#align({})[", alignment.typst());
@@ -2106,19 +2703,20 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 self.writer.string_literal(path);
                 self.writer.raw(", alt: ");
                 self.writer.string_literal(alt);
-                let _ = write!(self.writer, ", width: {}%)", value * 100.0);
+                if align_to_page {
+                    let _ = write!(self.writer, ", width: {value} * available.width)");
+                } else {
+                    let _ = write!(self.writer, ", width: {}%)", value * 100.0);
+                }
             }
             Some(ImageWidth::IntrinsicRatio(ratio)) => {
-                let _ = write!(
-                    self.writer,
-                    "#scale(x: {}%, y: {}%, reflow: true, image(",
-                    ratio * 100.0,
-                    ratio * 100.0
+                self.write_intrinsically_scaled_image(
+                    path,
+                    alt,
+                    ratio,
+                    true,
+                    align_to_page.then_some("available.width"),
                 );
-                self.writer.string_literal(path);
-                self.writer.raw(", alt: ");
-                self.writer.string_literal(alt);
-                self.writer.raw("))");
             }
             Some(ImageWidth::ViewportRatio(ratio)) => {
                 self.writer.raw("#image(");
@@ -2142,10 +2740,13 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             self.writer.raw("]");
         }
         self.writer.raw("]\n");
+        if align_to_page {
+            self.writer.raw("))\n");
+        }
     }
 
     pub(crate) fn write_inline_image(&mut self, image: &Image<'_>) {
-        let source = image.source.to_string();
+        let source = self.static_media_source_target(&image.source);
         let alt = inline_image_alt(image);
         let link = image
             .metadata
@@ -2153,7 +2754,24 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             .get_string("link")
             .filter(|target| !target.is_empty());
         if let Some(asset) = self.assets.get(&source) {
+            let fit = image
+                .metadata
+                .attributes
+                .get_string("fit")
+                .unwrap_or_default();
+            let fit_line = fit == "line";
+            if fit == "none" {
+                self.warn_unsupported_once(
+                    "inline-image-fit-none",
+                    "inline image `fit=none` page-height sizing is not supported by the PDF backend; rendering with normal intrinsic sizing",
+                    "Use `fit=line` to constrain the image to the text line, or use Asciidoctor PDF when the image must use the full page height.",
+                    Some(&image.location),
+                );
+            }
             self.writer.raw("#box(");
+            if fit_line {
+                self.writer.raw("context layout(size => { let body = ");
+            }
             if let Some(target) = &link {
                 self.writer.raw("link(");
                 self.writer.string_literal(target);
@@ -2161,16 +2779,13 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             }
             match image_width(&image.metadata, false) {
                 Some(ImageWidth::IntrinsicRatio(ratio)) => {
-                    let _ = write!(
-                        self.writer,
-                        "scale(x: {}%, y: {}%, reflow: true, image(",
-                        ratio * 100.0,
-                        ratio * 100.0
+                    self.write_intrinsically_scaled_image(
+                        &asset.virtual_path,
+                        &alt,
+                        ratio,
+                        false,
+                        None,
                     );
-                    self.writer.string_literal(&asset.virtual_path);
-                    self.writer.raw(", alt: ");
-                    self.writer.string_literal(&alt);
-                    self.writer.raw("))");
                 }
                 width => {
                     self.writer.raw("image(");
@@ -2196,6 +2811,11 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             if link.is_some() {
                 self.writer.raw("]");
             }
+            if fit_line {
+                self.writer.raw(
+                    "; let body-height = measure(body).height; let line-height = measure(box(height: 1em)).height; let target-height = calc.min(size.height, line-height); if body-height > target-height { let factor = target-height / body-height * 100%; scale(x: factor, y: factor, reflow: true, body) } else { body } })",
+                );
+            }
             self.writer.raw(")");
         } else {
             if let Some(target) = &link {
@@ -2208,6 +2828,76 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 self.writer.raw("]");
             }
         }
+    }
+
+    fn write_intrinsically_scaled_image(
+        &mut self,
+        path: &str,
+        alt: &str,
+        ratio: f64,
+        markup: bool,
+        maximum_width: Option<&str>,
+    ) {
+        let prefix = if markup { "#" } else { "" };
+        let percentage = ratio * 100.0;
+        let maximum_width = maximum_width.unwrap_or("size.width");
+        let _ = write!(
+            self.writer,
+            "{prefix}context layout(size => {{ let body = scale(x: {percentage}%, y: {percentage}%, reflow: true, image("
+        );
+        self.writer.string_literal(path);
+        self.writer.raw(", alt: ");
+        self.writer.string_literal(alt);
+        let _ = write!(
+            self.writer,
+            ")); let body-width = measure(body).width; if body-width > {maximum_width} {{ let factor = {maximum_width} / body-width * 100%; scale(x: factor, y: factor, reflow: true, body) }} else {{ body }} }})"
+        );
+    }
+
+    fn write_icon(&mut self, icon: &Icon<'_>) {
+        let alt = icon_alt(&icon.target, &icon.attributes);
+        match IconMode::from(self.processor.document_attributes()) {
+            IconMode::Font => {
+                if let Some(glyph) = builtin_icon_glyph(&icon.target.to_string()) {
+                    match icon.attributes.get_string("size").as_deref() {
+                        Some("2x") => self.write_sized_icon_glyph(glyph, "2em"),
+                        Some("3x") => self.write_sized_icon_glyph(glyph, "3em"),
+                        Some("4x") => self.write_sized_icon_glyph(glyph, "4em"),
+                        Some("5x") => self.write_sized_icon_glyph(glyph, "5em"),
+                        Some("lg") => self.write_sized_icon_glyph(glyph, "1.333em"),
+                        Some("fw") => {
+                            self.writer.raw("#box(width: 1em)[#align(center)[");
+                            self.write_text_expr(glyph);
+                            self.writer.raw("]]");
+                        }
+                        _ => self.write_text_expr(glyph),
+                    }
+                } else {
+                    self.write_text_expr(&format!("[{alt}]"));
+                }
+            }
+            IconMode::Image => {
+                let source = icon_image_source(self.processor.document_attributes(), &icon.target);
+                if let Some(asset) = self.assets.get(&source) {
+                    self.writer.raw("#box(image(");
+                    self.writer.string_literal(&asset.virtual_path);
+                    self.writer.raw(", alt: ");
+                    self.writer.string_literal(&alt);
+                    self.writer.raw(", height: 1em))");
+                } else {
+                    self.write_text_expr(&format!("[{}]", icon.target));
+                }
+            }
+            IconMode::Text | _ => self.write_text_expr(&format!("[{alt}]")),
+        }
+    }
+
+    fn write_sized_icon_glyph(&mut self, glyph: &str, size: &str) {
+        self.writer.raw("#text(size: ");
+        self.writer.raw(size);
+        self.writer.raw(")[");
+        self.write_text_expr(glyph);
+        self.writer.raw("]");
     }
 
     pub(crate) fn write_inline_macro(
@@ -2234,10 +2924,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                     }
                 }
             }
-            InlineMacro::Icon(icon) => {
-                self.warn_unsupported("inline icons", "rendering the icon name as text");
-                self.write_text_expr(&format!("[icon: {}]", icon.target));
-            }
+            InlineMacro::Icon(icon) => self.write_icon(icon),
             InlineMacro::Image(image) => self.write_inline_image(image),
             InlineMacro::Keyboard(keyboard) => {
                 for (index, key) in keyboard.keys.iter().enumerate() {
@@ -2283,16 +2970,51 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 }
             }
             InlineMacro::Stem(stem) => {
-                self.write_stem_fallback(stem.content, false);
+                self.write_stem_fallback(stem.content, false, Some(&stem.location));
             }
             InlineMacro::IndexTerm(term) => {
-                if let IndexTermKind::Flow(text) = &term.kind {
-                    self.write_text_expr(text);
-                }
+                self.write_index_term(term)?;
             }
-            _ => {}
+            _ => {
+                self.warn_unsupported_parser_variant("inline macro", Some(inline_macro.location()));
+            }
         }
         Ok(())
+    }
+
+    fn write_index_term(&mut self, term: &IndexTerm<'_>) -> Result<(), Error> {
+        if !self.index_catalog.is_suspended() {
+            let primary = self.render_index_catalog_term(term.term())?;
+            let secondary = term
+                .secondary()
+                .map(|inlines| self.render_index_catalog_term(inlines))
+                .transpose()?;
+            let tertiary = term
+                .tertiary()
+                .map(|inlines| self.render_index_catalog_term(inlines))
+                .transpose()?;
+            if let Some(anchor) = self.index_catalog.add(primary, secondary, tertiary) {
+                let _ = write!(self.writer, "#metadata(none) <__indexterm-{anchor}>");
+            }
+        }
+        if term.is_visible() {
+            self.write_inlines(term.term())?;
+        }
+        Ok(())
+    }
+
+    fn render_index_catalog_term(
+        &mut self,
+        inlines: &[InlineNode<'_>],
+    ) -> Result<CatalogTerm, Error> {
+        let plain = InlineTextTransform::default().to_string(inlines);
+        let output = std::mem::replace(&mut self.writer, Writer::new());
+        let previous = self.index_catalog.set_suspended(true);
+        let result = self.write_inlines(inlines);
+        self.index_catalog.set_suspended(previous);
+        let markup = std::mem::replace(&mut self.writer, output).into_string();
+        result?;
+        Ok(CatalogTerm { plain, markup })
     }
 
     fn write_menu(&mut self, menu: &Menu<'_>) {
@@ -2363,31 +3085,46 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             return Ok(());
         }
 
-        match resolve_xref(references.get(xref.target), xref.target, &guard) {
+        let previous = self.index_catalog.set_suspended(true);
+        let result = match resolve_xref(references.get(xref.target), xref, &guard) {
             XrefDisplay::Title(inlines, _scope) | XrefDisplay::Label(inlines, _scope) => {
-                self.write_labelled_link(xref.target, |visitor| visitor.write_inlines(inlines))?;
+                self.write_labelled_link(xref.target, |visitor| visitor.write_inlines(inlines))
             }
-            XrefDisplay::Fallback(text) => {
+            XrefDisplay::ShortCaption(prefix) => self.write_labelled_link(xref.target, |visitor| {
+                visitor.write_text_expr(&prefix);
+                Ok(())
+            }),
+            XrefDisplay::FullCaption(prefix, inlines, _scope) => {
                 self.write_labelled_link(xref.target, |visitor| {
-                    visitor.write_text_expr(&text);
+                    visitor.write_text_expr(&prefix);
+                    visitor.write_text_expr(", “");
+                    visitor.write_inlines(inlines)?;
+                    visitor.write_text_expr("”");
                     Ok(())
-                })?;
+                })
             }
+            XrefDisplay::Fallback(text) => self.write_labelled_link(xref.target, |visitor| {
+                visitor.write_text_expr(&text);
+                Ok(())
+            }),
             XrefDisplay::Unresolved(text) | XrefDisplay::Nested(text) => {
                 self.write_text_expr(&text);
+                Ok(())
             }
             XrefDisplay::External(target) => {
                 if let Some((target, text)) = self.interdocument_xref(&target) {
                     self.write_external_link(&target, |visitor| {
                         visitor.write_text_expr(&text);
                         Ok(())
-                    })?;
+                    })
                 } else {
                     self.write_text_expr(&target);
+                    Ok(())
                 }
             }
-        }
-        Ok(())
+        };
+        self.index_catalog.set_suspended(previous);
+        result
     }
 
     fn interdocument_xref(&self, target: &str) -> Option<(String, String)> {
@@ -2433,14 +3170,14 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         fallback: &str,
     ) -> Result<(), Error> {
         let role = attributes.and_then(|attributes| attributes.get_string("role"));
-        let wrappers = self.write_inline_span_start(None, role.as_deref());
+        let state = self.write_inline_span_start(None, role.as_deref());
 
         match text {
             [InlineNode::Macro(InlineMacro::Image(image))]
                 if image.metadata.attributes.get_string("link").is_some() =>
             {
                 self.write_inline_image(image);
-                self.write_inline_span_end(wrappers);
+                self.write_inline_span_end(state);
                 return Ok(());
             }
             _ => {}
@@ -2455,7 +3192,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             self.write_inlines(text)?;
         }
         self.writer.raw("]");
-        self.write_inline_span_end(wrappers);
+        self.write_inline_span_end(state);
         Ok(())
     }
 }
@@ -2736,6 +3473,22 @@ pub(crate) fn collapse_source_whitespace(text: &str) -> Cow<'_, str> {
     Cow::Owned(collapsed)
 }
 
+fn prose_whitespace(text: &str, pre_wrap: bool) -> Cow<'_, str> {
+    if !pre_wrap || !text.contains("  ") {
+        return collapse_source_whitespace(text);
+    }
+
+    let mut protected = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        protected.push(character);
+        if character == ' ' && characters.peek() == Some(&' ') {
+            protected.push('\u{200b}');
+        }
+    }
+    Cow::Owned(collapse_source_whitespace(&protected).into_owned())
+}
+
 fn long_unbreakable_ranges(text: &str, max_columns: usize) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut run_start = None;
@@ -2781,6 +3534,13 @@ fn wrap_code_text(text: &str, max_columns: usize, tab_size: usize) -> Cow<'_, st
         }
     }
     Cow::Owned(wrapped)
+}
+
+fn source_gutter_tenths(source: &str, options: &SourceLineOptions) -> usize {
+    options.line_number_start.map_or(0, |start| {
+        let last = start.saturating_add(source_line_count(source).saturating_sub(1));
+        last.to_string().len().saturating_mul(6)
+    })
 }
 
 fn wrap_code_text_with_line_origins(
@@ -3011,6 +3771,27 @@ fn inline_image_fallback_text(image: &Image<'_>) -> String {
         .map_or_else(|| format!("[image: {}]", image.source), Cow::into_owned)
 }
 
+pub(crate) fn builtin_icon_glyph(name: &str) -> Option<&'static str> {
+    match name {
+        "arrow-down" => Some("↓"),
+        "arrow-left" => Some("←"),
+        "arrow-right" => Some("→"),
+        "arrow-up" => Some("↑"),
+        "check" => Some("✓"),
+        "circle-info" | "info-circle" | "info" => Some("ⓘ"),
+        "exclamation-triangle" | "triangle-exclamation" | "warning" => Some("⚠"),
+        "fire" => Some("🔥"),
+        "heart" => Some("♥"),
+        "lightbulb" | "lightbulb-o" => Some("💡"),
+        "minus" => Some("−"),
+        "plus" => Some("+"),
+        "question" | "circle-question" | "question-circle" => Some("?"),
+        "star" => Some("★"),
+        "times" | "xmark" => Some("×"),
+        _ => None,
+    }
+}
+
 fn block_image_default_alt(image: &Image<'_>) -> String {
     image
         .source
@@ -3073,6 +3854,29 @@ fn image_width(metadata: &BlockMetadata<'_>, supports_viewport_width: bool) -> O
             ""
         };
         return Some(pdf_image_width(value, supports_viewport_width));
+    }
+
+    if let Some(scale) = metadata.attributes.get_string("scale") {
+        return Some(ImageWidth::IntrinsicRatio(leading_number(&scale) / 100.0));
+    }
+
+    if let Some(scaledwidth) = metadata.attributes.get_string("scaledwidth") {
+        if let Some(percentage) = scaledwidth.strip_suffix('%') {
+            return Some(ImageWidth::ContainerRatio {
+                value: leading_number(percentage) / 100.0,
+                constrain_to_bounds: false,
+            });
+        }
+        if scaledwidth.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Some(ImageWidth::ContainerRatio {
+                value: leading_number(&scaledwidth) / 100.0,
+                constrain_to_bounds: false,
+            });
+        }
+        return Some(ImageWidth::Points {
+            value: measurement_points(&scaledwidth),
+            constrain_to_bounds: false,
+        });
     }
 
     let width = metadata.attributes.get_string("width")?;
@@ -3175,7 +3979,7 @@ fn literal_table_cell_text(blocks: &[Block<'_>]) -> Option<String> {
 mod tests {
     use super::{
         BlockImageAlignment, ImageWidth, block_image_alignment, expand_code_tabs, image_width,
-        long_unbreakable_ranges, measurement_points, wrap_code_text,
+        long_unbreakable_ranges, measurement_points, prose_whitespace, wrap_code_text,
         wrap_code_text_with_line_origins,
     };
     use acdc_parser::{AttributeValue, BlockMetadata};
@@ -3225,6 +4029,18 @@ mod tests {
     }
 
     #[test]
+    fn pre_wrap_preserves_each_repeated_space() {
+        assert_eq!(
+            prose_whitespace("two  spaces   together", true),
+            "two \u{200b} spaces \u{200b} \u{200b} together"
+        );
+        assert_eq!(
+            prose_whitespace("two  spaces   together", false),
+            "two spaces together"
+        );
+    }
+
+    #[test]
     fn pdfwidth_overrides_width_and_uses_pdf_measurements() {
         let mut metadata = metadata_with_width("40");
         metadata
@@ -3251,6 +4067,51 @@ mod tests {
         ] {
             assert_measurement(input, expected);
         }
+    }
+
+    #[test]
+    fn pdf_image_scale_attributes_follow_reference_precedence() {
+        let mut metadata = metadata_with_width("120");
+        metadata
+            .attributes
+            .set("scaledwidth".into(), AttributeValue::String("40%".into()));
+        metadata
+            .attributes
+            .set("scale".into(), AttributeValue::String("25".into()));
+        metadata
+            .attributes
+            .set("pdfwidth".into(), AttributeValue::String("72pt".into()));
+
+        assert_eq!(
+            image_width(&metadata, true),
+            Some(ImageWidth::Points {
+                value: 72.0,
+                constrain_to_bounds: false,
+            })
+        );
+        metadata.attributes.remove("pdfwidth");
+        assert_eq!(
+            image_width(&metadata, true),
+            Some(ImageWidth::IntrinsicRatio(0.25))
+        );
+        metadata.attributes.remove("scale");
+        assert_eq!(
+            image_width(&metadata, true),
+            Some(ImageWidth::ContainerRatio {
+                value: 0.4,
+                constrain_to_bounds: false,
+            })
+        );
+        metadata
+            .attributes
+            .set("scaledwidth".into(), AttributeValue::String("1in".into()));
+        assert_eq!(
+            image_width(&metadata, true),
+            Some(ImageWidth::Points {
+                value: 72.0,
+                constrain_to_bounds: false,
+            })
+        );
     }
 
     #[test]

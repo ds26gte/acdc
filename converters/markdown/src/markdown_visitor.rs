@@ -3,16 +3,17 @@
 use std::{io::Write, rc::Rc};
 
 use acdc_converters_core::{
-    Diagnostics,
+    Converter, Diagnostics,
     code::detect_language,
     list::OrderedListNumbering,
+    media::resolve_target,
     visitor::{Visitor, WritableVisitor},
     xref::{XrefDisplay, resolve_xref},
 };
 use acdc_parser::{
     Admonition, Audio, Block, CalloutList, CrossReference, DelimitedBlock, DelimitedBlockType,
     DescriptionList, DiscreteHeader, Document, Header, Image, InlineMacro, InlineNode, ListItem,
-    OrderedList, PageBreak, Paragraph, Section, Table, TableOfContents, ThematicBreak,
+    OrderedList, PageBreak, Paragraph, Section, Source, Table, TableOfContents, ThematicBreak,
     UnorderedList, Video,
 };
 
@@ -49,6 +50,10 @@ impl<'a, 'd, W: Write> MarkdownVisitor<'a, 'd, W> {
     /// Get the Markdown variant being used.
     fn variant(&self) -> MarkdownVariant {
         self.processor.variant()
+    }
+
+    fn media_target(&self, source: &Source<'_>) -> String {
+        resolve_target(&source.to_string(), self.processor.document_attributes())
     }
 
     /// Write a warning comment to the output for unsupported features.
@@ -494,7 +499,7 @@ impl<W: Write> Visitor for MarkdownVisitor<'_, '_, W> {
             .get_string("alt")
             .unwrap_or(std::borrow::Cow::Borrowed("image"));
 
-        let target = image.source.to_string();
+        let target = self.media_target(&image.source);
 
         // Markdown image syntax: ![alt](url "title")
         if let Some(title) = image.metadata.attributes.get_string("title") {
@@ -509,7 +514,7 @@ impl<W: Write> Visitor for MarkdownVisitor<'_, '_, W> {
         // Video embedding not supported in standard Markdown
         self.write_warning("video embedding", "providing link")?;
         if let Some(first_source) = video.sources.first() {
-            let target = first_source.to_string();
+            let target = self.media_target(first_source);
             writeln!(self.writer, "[Video: {target}]({target})")?;
         }
         Ok(())
@@ -518,7 +523,7 @@ impl<W: Write> Visitor for MarkdownVisitor<'_, '_, W> {
     fn visit_audio(&mut self, audio: &Audio) -> Result<(), Self::Error> {
         // Audio embedding not supported in standard Markdown
         self.write_warning("audio embedding", "providing link")?;
-        let target = audio.source.to_string();
+        let target = self.media_target(&audio.source);
         writeln!(self.writer, "[Audio: {target}]({target})")?;
         Ok(())
     }
@@ -699,7 +704,7 @@ impl<W: Write> MarkdownVisitor<'_, '_, W> {
             }
             InlineMacro::Image(image) => {
                 // Inline image macro
-                let target = image.source.to_string();
+                let target = self.media_target(&image.source);
                 // Use the image alt text or default
                 let alt = "image"; // Inline images don't have attributes field
                 write!(self.writer, "![{alt}]({target})")?;
@@ -791,7 +796,11 @@ impl<W: Write> MarkdownVisitor<'_, '_, W> {
                 write!(self.writer, "{target}")?;
             }
             InlineMacro::CrossReference(xref) => self.visit_cross_reference(xref)?,
-            InlineMacro::Pass(_) | InlineMacro::Stem(_) | InlineMacro::IndexTerm(_) | _ => {
+            InlineMacro::IndexTerm(term) if term.is_visible() => {
+                self.visit_inline_nodes(term.term())?;
+            }
+            InlineMacro::IndexTerm(_) => {}
+            InlineMacro::Pass(_) | InlineMacro::Stem(_) | _ => {
                 self.diagnostics.warn(format!(
                     "unsupported inline macro in Markdown, skipping macro: {mac:?}"
                 ));
@@ -804,8 +813,8 @@ impl<W: Write> MarkdownVisitor<'_, '_, W> {
     ///
     /// Markdown has no cross-reference syntax, so this is a plain link to the
     /// `#id` fragment. Its text is the reference's own text when it has one,
-    /// otherwise the target's reference text (an explicit label or its title),
-    /// falling back to `[id]` as asciidoctor does.
+    /// otherwise the target's reference text (an explicit label, caption-style
+    /// text, or its title), falling back to `[id]` as asciidoctor does.
     fn visit_cross_reference(&mut self, xref: &CrossReference<'_>) -> Result<(), Error> {
         if !xref.text.is_empty() {
             return self.write_anchor_link(xref.target, |visitor| {
@@ -820,7 +829,7 @@ impl<W: Write> MarkdownVisitor<'_, '_, W> {
         // guard both outlive the `&mut self` render calls.
         let references = Rc::clone(&self.processor.references);
         let guard = self.processor.xref_guard.clone();
-        match resolve_xref(references.get(xref.target), xref.target, &guard) {
+        match resolve_xref(references.get(xref.target), xref, &guard) {
             XrefDisplay::Title(inlines, _scope) | XrefDisplay::Label(inlines, _scope) => self
                 .write_anchor_link(xref.target, |visitor| {
                     for node in inlines {
@@ -828,6 +837,20 @@ impl<W: Write> MarkdownVisitor<'_, '_, W> {
                     }
                     Ok(())
                 }),
+            XrefDisplay::ShortCaption(prefix) => self.write_anchor_link(xref.target, |visitor| {
+                write!(visitor.writer, "{prefix}")?;
+                Ok(())
+            }),
+            XrefDisplay::FullCaption(prefix, inlines, _scope) => {
+                self.write_anchor_link(xref.target, |visitor| {
+                    write!(visitor.writer, "{prefix}, “")?;
+                    for node in inlines {
+                        visitor.visit_inline_node(node)?;
+                    }
+                    write!(visitor.writer, "”")?;
+                    Ok(())
+                })
+            }
             XrefDisplay::Fallback(text) | XrefDisplay::Unresolved(text) => {
                 self.write_anchor_link(xref.target, |visitor| {
                     write!(visitor.writer, "{text}")?;

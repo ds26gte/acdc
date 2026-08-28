@@ -19,7 +19,7 @@ use acdc_parser::{
 };
 
 use crate::{
-    Error, PdfVisitor, admonition_icon_source, author_name, encode_label, is_breakable_table,
+    Error, PdfVisitor, admonition_icon_source, author_name, encode_label, is_page_breakable_table,
     is_unbreakable_delimited_block, is_unbreakable_paragraph,
     pdf_visitor::{AutomaticPreambleLeadState, ExplicitPageBreakState},
 };
@@ -56,6 +56,14 @@ fn revision_text(attributes: &acdc_parser::DocumentAttributes<'_>) -> Option<Str
 
 impl Visitor for PdfVisitor<'_, '_, '_> {
     type Error = Error;
+
+    fn visit_document_start(
+        &mut self,
+        _doc: &acdc_parser::Document<'_>,
+    ) -> Result<(), Self::Error> {
+        self.page_numbering.write_initial(&mut self.writer);
+        Ok(())
+    }
 
     fn visit_block(&mut self, block: &Block<'_>) -> Result<(), Self::Error> {
         if self.automatic_preamble_lead_state == AutomaticPreambleLeadState::Pending
@@ -104,7 +112,12 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
         &mut self,
         _doc: &acdc_parser::Document<'_>,
     ) -> Result<(), Self::Error> {
-        self.render_toc(None, "auto")
+        if self.page_numbering.plan.starts_at_body() {
+            self.page_numbering.start_arabic(&mut self.writer);
+        }
+        self.render_toc(None, "auto")?;
+        self.page_numbering.start_arabic(&mut self.writer);
+        Ok(())
     }
 
     fn visit_preamble_start(
@@ -121,19 +134,11 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
     }
 
     fn visit_header(&mut self, header: &Header<'_>) -> Result<(), Self::Error> {
-        let title_page = self
-            .processor
-            .document_attributes()
-            .get("title-page")
-            .is_some_and(|value| {
-                !matches!(value, AttributeValue::Bool(false) | AttributeValue::None)
-            })
-            || self
-                .processor
-                .document_attributes()
-                .get_string("doctype")
-                .as_deref()
-                == Some("book");
+        let title_page = self.page_numbering.plan.has_title_page();
+
+        if self.page_numbering.plan.starts_before_header() {
+            self.page_numbering.start_arabic(&mut self.writer);
+        }
 
         if title_page {
             self.writer
@@ -168,7 +173,7 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
         }
         self.writer.raw("]\n");
         if title_page {
-            self.writer.raw("#counter(page).update(0)\n]\n\n");
+            self.writer.raw("]\n\n");
         } else {
             self.writer.raw("#v(1em)\n\n");
         }
@@ -283,7 +288,7 @@ impl Visitor for PdfVisitor<'_, '_, '_> {
         if unbreakable {
             self.writer.raw("#_acdc_unbreakable[\n");
         }
-        let sticky_anchor = is_breakable_table(block)
+        let sticky_anchor = is_page_breakable_table(block)
             && (block.metadata.id.is_some() || !block.metadata.anchors.is_empty());
         if sticky_anchor {
             self.writer

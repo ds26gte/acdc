@@ -68,6 +68,10 @@
   text(weight: 700, body)
 }
 
+#let _acdc_arabic_page_start = none
+#set page(numbering: "i")
+#set page(numbering: "1")
+#counter(page).update(1)
 #align(center)[
 #text(size: 22pt, weight: "bold")[#text("Table decorations")]
 ]
@@ -75,7 +79,9 @@
 
 #heading(level: 1)[#text("Frame and grid")] <id-5f6672616d655f616e645f67726964>
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 1. ")#text("Default all")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("B")
@@ -86,7 +92,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 2. ")#text("Ends and rows")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: none, right: none, top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: none, right: none, top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("B")
@@ -97,7 +105,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 3. ")#text("Legacy topbot and columns")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: none, right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: none, ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: none, top: 0.5pt + rgb("#dddddd"), bottom: none, ))[#text("B")
@@ -108,7 +118,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 4. ")#text("Sides and no grid")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: none, top: none, bottom: none, ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: none, right: 0.5pt + rgb("#dddddd"), top: none, bottom: none, ))[#text("B")
@@ -119,7 +131,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 5. ")#text("No frame and no grid")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: none, right: none, top: none, bottom: none, ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: none, right: none, top: none, bottom: none, ))[#text("B")
@@ -130,7 +144,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 6. ")#text("Invalid values disable decoration")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: none, right: none, top: none, bottom: none, ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: none, right: none, top: none, bottom: none, ))[#text("B")
@@ -141,7 +157,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 7. ")#text("Header divider remains without frame or grid")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.header(repeat: true, table.cell(x: 0, y: 0, stroke: (left: none, right: none, top: none, bottom: 1.25pt + rgb("#dddddd"), ))[#tableheader[#text("Name")
 
 ]], table.cell(x: 1, y: 0, stroke: (left: none, right: none, top: none, bottom: 1.25pt + rgb("#dddddd"), ))[#tableheader[#text("Value")
@@ -154,7 +172,9 @@
 
 #heading(level: 1)[#text("Stripes and sections")] <id-5f737472697065735f616e645f73656374696f6e73>
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 8. ")#text("Odd body rows")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.header(repeat: true, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 1.25pt + rgb("#dddddd"), ))[#tableheader[#text("Name")
 
 ]], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 1.25pt + rgb("#dddddd"), ))[#tableheader[#text("Value")
@@ -177,7 +197,9 @@
 
 ]))
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 9. ")#text("Even body rows")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.header(repeat: true, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 1.25pt + rgb("#dddddd"), ))[#tableheader[#text("Name")
 
 ]], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 1.25pt + rgb("#dddddd"), ))[#tableheader[#text("Value")
@@ -200,7 +222,9 @@
 
 ]))
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 10. ")#text("All body rows")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("1")
@@ -211,7 +235,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 11. ")#text("Hover has no static effect")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("1")
@@ -224,7 +250,9 @@
 
 #heading(level: 1)[#text("Spans")] <id-5f7370616e73>
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 12. ")#text("Merged cells keep rule gaps and their origin stripe")]
+]
 #table(columns: (1fr, 1fr, 1fr), align: (left + top, left + top, left + top), stroke: none, table.cell(x: 0, y: 0, colspan: 2, rowspan: 2, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("Combined")
 
 ], table.cell(x: 2, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("Top")
@@ -241,7 +269,9 @@
 
 #heading(level: 1)[#text("Source-order document defaults")] <id-5f736f757263655f6f726465725f646f63756d656e745f64656661756c7473>
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 13. ")#text("Initial document values")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: none, top: none, bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: none, right: 0.5pt + rgb("#dddddd"), top: none, bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("1")
@@ -252,7 +282,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 14. ")#text("Changed document values")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: none, right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: none, ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: none, top: 0.5pt + rgb("#dddddd"), bottom: none, ))[#text("1")
@@ -263,7 +295,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 15. ")#text("Local values override document values")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ), fill: rgb("#f9f9f9"))[#text("1")
@@ -274,7 +308,9 @@
 
 ])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 16. ")#text("Unset document values restore defaults")]
+]
 #table(columns: (1fr, 1fr), align: (left + top, left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("A")
 
 ], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("1")

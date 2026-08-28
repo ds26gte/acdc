@@ -68,6 +68,10 @@
   text(weight: 700, body)
 }
 
+#let _acdc_arabic_page_start = none
+#set page(numbering: "i")
+#set page(numbering: "1")
+#counter(page).update(1)
 #align(center)[
 #text(size: 22pt, weight: "bold")[#text("Table footer pagination")]
 ]
@@ -448,7 +452,9 @@ let acdc-table-body = [
 ]
 align(right, [
 #context block(width: measure(acdc-table-body).width)[
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 1. ")#text("Long right-aligned footer")]
+]
 ]
 #acdc-table-body
 ])

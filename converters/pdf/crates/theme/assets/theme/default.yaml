@@ -1,6 +1,7 @@
 # The built-in default theme: a bland, neutral look (white page, grayscale,
 # bundled fonts). This file is the single source of truth for `Theme::default()`
 # — it is embedded via `include_str!` and parsed at runtime.
+page_numbering_start_at: body
 palette:
   page_bg: "#ffffff"
   body_text: "#111111"
@@ -64,6 +65,15 @@ heading:
     break_after: auto
   chapter:
     break_before: always
+header:
+  align: left
+  font_size_pt: 11.0
+  font_weight: 500
+  logo_height_pt: 22.0
+  show_on_page_one: false
+footer:
+  font_size_pt: 9.0
+  page_number_position: center
 index:
   columns: 2
   column_gap_pt: 12.0

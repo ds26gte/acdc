@@ -14,12 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Figures, tables, examples, listings, and source blocks now honor caption
+  labels at each block's source position. Custom and disabled captions,
+  inner-first numbering, and changes made part-way through a document match
+  Asciidoctor in standard and semantic HTML.
 - Cross-references preserve formatted explicit text through supported nested
   inline macros. Empty references to captioned blocks honor source-order
   `xrefstyle=basic`, `short`, and `full`, including custom and disabled
   captions, matching Asciidoctor.
 - Visible index terms and opt-in generated index labels preserve inline
   formatting and attribute substitutions, matching Asciidoctor.
+- Index-term `see` and `see-also` relationships no longer appear as part of a
+  visible term. The opt-in `:acdc-index:` catalog renders them separately and
+  links exact matches to their primary entries; missing targets remain text.
 - Inline icon macros use their explicit alternative text or a readable form of
   their target in text and image modes. Image icons honor `iconsdir`,
   `icontype`, and format values such as `icons=svg`, matching Asciidoctor.

@@ -14,12 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Figures, tables, examples, listings, and source blocks now render captions
+  with the labels active at each block's source position. Custom and disabled
+  captions, inner-first numbering, and changes made part-way through a document
+  match Asciidoctor.
 - Cross-references preserve formatted explicit text through supported nested
   inline macros. Empty references to captioned blocks honor source-order
   `xrefstyle=basic`, `short`, and `full`, including custom and disabled
   captions.
 - Visible index terms and generated catalog labels preserve inline formatting,
   links, and attribute substitutions.
+- Index-term `see` and `see-also` relationships render as separate catalog
+  directions instead of appearing in visible term text.
 - Inline icon labels use their explicit alternative text, or a readable form
   of their target when no alternative is set.
 - Ordered lists honor a positive `start` value, including on nested lists.

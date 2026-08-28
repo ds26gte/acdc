@@ -68,6 +68,10 @@
   text(weight: 700, body)
 }
 
+#let _acdc_arabic_page_start = none
+#set page(numbering: "i")
+#set page(numbering: "1")
+#counter(page).update(1)
 #align(center)[
 #text(size: 22pt, weight: "bold")[#text("Combined table span formatting")]
 ]
@@ -75,7 +79,9 @@
 
 #heading(level: 1)[#text("Column defaults")] <id-5f636f6c756d6e5f64656661756c7473>
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 1. ")#text("Defaults follow source cells")]
+]
 #table(columns: (1fr, 1fr, 1fr), align: (right + bottom, left + top, center + horizon), stroke: none, table.cell(x: 0, y: 0, colspan: 2, rowspan: 2, align: center + horizon, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#tableemphasis[#text("Combined ")#strong[#text("bold")]#text(" Ada")
 
 ]], table.cell(x: 2, y: 0, align: left + top, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#tableemphasis[#text("First companion ")#strong[#text("bold")]#text(" Ada")
@@ -90,7 +96,9 @@
 
 ]])
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 2. ")#text("Duplicates use each column")]
+]
 #table(columns: (1fr, 1fr, 1fr), align: (right + bottom, left + top, center + horizon), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#tablestrong[#text("Repeated ")#strong[#text("bold")]#text(" Ada")
 
 ]], table.cell(x: 1, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#tableemphasis[#text("Repeated ")#strong[#text("bold")]#text(" Ada")

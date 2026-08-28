@@ -23,21 +23,21 @@ use acdc_parser::{
     Anchor, AttributeValue, Autolink, Block, BlockMetadata, Caption, CaptionKind, ColumnStyle,
     ColumnWidth, CrossReference, DelimitedBlock, DelimitedBlockType, DescriptionList,
     DescriptionListItem, ElementAttributes, HorizontalAlignment, Icon, Image, IndexTerm,
-    InlineMacro, InlineNode, ListItem, Location, Menu, Paragraph, Raw, Section, SectionKind,
-    Source, Substitution, Table, TableColumn, TableFrame, TableGrid, TableOfContents,
-    TablePresentation, TableStripes, Title, TocEntry, VerticalAlignment,
+    IndexTermRelationship, InlineMacro, InlineNode, ListItem, Location, Menu, Paragraph, Raw,
+    Section, SectionKind, Source, Substitution, Table, TableColumn, TableFrame, TableGrid,
+    TableOfContents, TablePresentation, TableStripes, Title, TocEntry, VerticalAlignment,
 };
 use acdc_pdf_images::ImageMap;
 use acdc_pdf_theme::{
-    Heading, PageBreakBefore, Palette, PartBreakAfter, Table as TableTheme, TableAlignment, Theme,
+    Heading, PageBreakBefore, Palette, PartBreakAfter, Table as TableTheme, TableAlignment,
 };
 use acdc_pdf_typst::Writer;
 use unicode_width::UnicodeWidthChar;
 
 use crate::{
-    Error, Processor, encode_bibliography_reference_label, encode_footnote_label, encode_label,
-    has_autofit_option,
-    index::{CatalogTerm, IndexCatalog, PageSequenceStyle},
+    Error, PageNumberingPlan, Processor, TypstSourceConfig, code_wrap_columns,
+    encode_bibliography_reference_label, encode_footnote_label, encode_label, has_autofit_option,
+    index::{CatalogRelationship, CatalogTerm, IndexCatalog, PageSequenceStyle},
     warn_with_advice_at,
 };
 
@@ -153,6 +153,7 @@ pub(crate) struct PdfVisitor<'a, 'd, 'm> {
     text_boundaries: TextBoundaries,
     toc_entries: Vec<TocEntry<'a>>,
     toc_written: bool,
+    pub(crate) page_numbering: PageNumberingState,
     populated_index_sections: HashSet<String>,
     bibliography_backlinks_written: HashSet<String>,
     unsupported_metadata_warnings: HashSet<&'static str>,
@@ -162,6 +163,41 @@ pub(crate) struct PdfVisitor<'a, 'd, 'm> {
     index_catalog: IndexCatalog,
     index_columns: usize,
     index_column_gap_pt: f64,
+}
+
+pub(crate) struct PageNumberingState {
+    pub(crate) plan: PageNumberingPlan,
+    arabic_started: bool,
+}
+
+impl PageNumberingState {
+    fn new(plan: PageNumberingPlan) -> Self {
+        Self {
+            plan,
+            arabic_started: plan.conditional_arabic_start().is_some(),
+        }
+    }
+
+    pub(crate) fn write_initial(&self, writer: &mut Writer) {
+        if let Some(start) = self.plan.conditional_arabic_start() {
+            let start = start.get();
+            let _ = writeln!(writer, "#let _acdc_arabic_page_start = {start}");
+            let _ = writeln!(
+                writer,
+                "#set page(numbering: (..nums) => {{\n  let n = nums.pos().first()\n  if n < {start} {{ numbering(\"i\", n) }} else {{ numbering(\"1\", n - {start} + 1) }}\n}})"
+            );
+        } else {
+            writer.raw("#let _acdc_arabic_page_start = none\n#set page(numbering: \"i\")\n");
+        }
+    }
+
+    pub(crate) fn start_arabic(&mut self, writer: &mut Writer) {
+        if self.arabic_started {
+            return;
+        }
+        writer.raw("#set page(numbering: \"1\")\n#counter(page).update(1)\n");
+        self.arabic_started = true;
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -255,12 +291,19 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
     pub(crate) fn new(
         processor: Processor<'a>,
         assets: &'m ImageMap,
-        theme: &'m Theme,
-        page_width_pt: f64,
-        code_wrap_columns: usize,
+        config: TypstSourceConfig<'m>,
         toc_entries: Vec<TocEntry<'a>>,
         diagnostics: Diagnostics<'d>,
     ) -> Self {
+        let theme = config.theme;
+        let emit_options = config.emit_options;
+        let page_width_pt = emit_options.page.width_points(emit_options.page_layout);
+        let code_wrap_columns = code_wrap_columns(
+            theme,
+            emit_options.page,
+            emit_options.page_layout,
+            emit_options.page_margin,
+        );
         let doctype = processor
             .document_attributes()
             .get_string("doctype")
@@ -308,6 +351,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             text_boundaries: TextBoundaries::BOTH,
             toc_entries,
             toc_written: false,
+            page_numbering: PageNumberingState::new(config.page_numbering),
             populated_index_sections: HashSet::new(),
             bibliography_backlinks_written: HashSet::new(),
             unsupported_metadata_warnings: HashSet::new(),
@@ -399,15 +443,15 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             } else {
                 config.placement()
             };
-        let should_render = match placement {
-            "auto" => matches!(
-                configured_placement,
-                "auto" | "left" | "right" | "top" | "bottom"
-            ),
-            other => configured_placement == other,
-        };
+        let should_render = placement == configured_placement
+            || placement == "auto"
+                && matches!(configured_placement, "left" | "right" | "top" | "bottom");
         if !should_render {
             return Ok(());
+        }
+
+        if placement == "auto" && self.page_numbering.plan.starts_before_toc() {
+            self.page_numbering.start_arabic(&mut self.writer);
         }
 
         self.toc_written = true;
@@ -429,7 +473,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         }
 
         self.writer.raw(
-            "#let _acdc_toc_entry(target, depth, body) = context {\n  link(\n    target,\n    pad(\n      left: depth * 1.25em,\n      grid(\n        columns: (auto, 1fr, auto),\n        column-gutter: 0.5em,\n        body,\n        repeat[.],\n        str(counter(page).at(target).first()),\n      ),\n    ),\n  )\n}\n",
+            "#let _acdc_toc_entry(target, depth, body) = context {\n  link(\n    target,\n    pad(\n      left: depth * 1.25em,\n      grid(\n        columns: (auto, 1fr, auto),\n        column-gutter: 0.5em,\n        body,\n        repeat[.],\n        counter(page).display(at: target),\n      ),\n    ),\n  )\n}\n",
         );
 
         let entries = self.toc_entries.clone();
@@ -487,6 +531,9 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         if suppress_header || suppress_footer {
             self.writer.raw("]\n\n");
         }
+        if placement == "auto" && self.page_numbering.plan.starts_after_toc() {
+            self.page_numbering.start_arabic(&mut self.writer);
+        }
         Ok(())
     }
 
@@ -525,7 +572,6 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
         let captioned = block.metadata.caption.is_some() || fallback.is_some();
         if shows_block_title(&block.inner) && !writes_own_title && !intrinsic_table {
             let sticky_title = table
-                && block.metadata.options.contains(&"breakable")
                 && !block.metadata.options.contains(&"unbreakable")
                 && !block.title.is_empty();
             if sticky_title {
@@ -2263,9 +2309,7 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
             "]\nalign({}, [\n#context block(width: measure(acdc-table-body).width)[",
             typst_table_alignment(alignment)
         );
-        let sticky_title = metadata.options.contains(&"breakable")
-            && !metadata.options.contains(&"unbreakable")
-            && !title.is_empty();
+        let sticky_title = !metadata.options.contains(&"unbreakable") && !title.is_empty();
         if sticky_title {
             self.writer
                 .raw("#block(sticky: true, above: 0pt, below: 0pt)[\n");
@@ -2993,7 +3037,22 @@ impl<'a, 'd, 'm> PdfVisitor<'a, 'd, 'm> {
                 .tertiary()
                 .map(|inlines| self.render_index_catalog_term(inlines))
                 .transpose()?;
-            if let Some(anchor) = self.index_catalog.add(primary, secondary, tertiary) {
+            let relationship = match term.relationship.as_ref() {
+                Some(IndexTermRelationship::See { target }) => {
+                    CatalogRelationship::See(self.render_index_catalog_term(target)?)
+                }
+                Some(IndexTermRelationship::SeeAlso { targets }) => CatalogRelationship::SeeAlso(
+                    targets
+                        .iter()
+                        .map(|target| self.render_index_catalog_term(target))
+                        .collect::<Result<_, _>>()?,
+                ),
+                None | Some(_) => CatalogRelationship::None,
+            };
+            if let Some(anchor) = self
+                .index_catalog
+                .add(primary, secondary, tertiary, relationship)
+            {
                 let _ = write!(self.writer, "#metadata(none) <__indexterm-{anchor}>");
             }
         }

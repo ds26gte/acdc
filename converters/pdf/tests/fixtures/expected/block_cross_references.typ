@@ -68,6 +68,10 @@
   text(weight: 700, body)
 }
 
+#let _acdc_arabic_page_start = none
+#set page(numbering: "i")
+#set page(numbering: "1")
+#counter(page).update(1)
 #align(center)[
 #text(size: 22pt, weight: "bold")[#text("Cross-reference coverage")]
 ]
@@ -135,8 +139,12 @@
 #blocktitle[#text("Stem Title")]
 #block[#text("x = 1")]
 
+#block(sticky: true, above: 0pt, below: 0pt)[
 #metadata(none) <id-7461626c652d6964>
+]
+#block(sticky: true, above: 0pt, below: 0pt)[
 #blocktitle[#text("Table 1. ")#text("Table ")#strong[#text("Title")]]
+]
 #table(columns: (1fr), align: (left + top), stroke: none, table.cell(x: 0, y: 0, stroke: (left: 0.5pt + rgb("#dddddd"), right: 0.5pt + rgb("#dddddd"), top: 0.5pt + rgb("#dddddd"), bottom: 0.5pt + rgb("#dddddd"), ))[#text("Cell")
 
 ])

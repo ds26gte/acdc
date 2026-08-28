@@ -7,6 +7,8 @@ mod error;
 mod fonts;
 mod heading;
 mod index;
+mod numbering;
+mod page;
 mod spacing;
 mod syntax;
 mod table;
@@ -22,6 +24,8 @@ pub use error::Error;
 pub use fonts::{EMOJI_FONT_FAMILY, embedded_fonts};
 pub use heading::{ChapterHeading, Heading, PageBreakBefore, PartBreakAfter, PartHeading};
 pub use index::Index;
+pub use numbering::PageNumberingStart;
+pub use page::{Footer, Header, HeaderAlignment, PageNumberPosition};
 pub use spacing::Spacing;
 pub use syntax::{HIGHLIGHT_THEME_PATH, highlight_theme};
 pub use table::{Table, TableAlignment};
@@ -33,6 +37,9 @@ const DEFAULT_THEME_YAML: &str = include_str!("../assets/theme/default.yaml");
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Theme {
+    /// Page where Arabic numbering starts; earlier pages use lower-Roman labels.
+    #[serde(default)]
+    pub page_numbering_start_at: PageNumberingStart,
     pub palette: Palette,
     pub typography: Typography,
     pub spacing: Spacing,
@@ -40,6 +47,10 @@ pub struct Theme {
     pub caption: Caption,
     #[serde(default)]
     pub heading: Heading,
+    #[serde(default)]
+    pub header: Header,
+    #[serde(default)]
+    pub footer: Footer,
     #[serde(default)]
     pub index: Index,
     #[serde(default)]
@@ -68,6 +79,8 @@ impl Theme {
         self.caption.validate()?;
         self.typography.validate()?;
         self.spacing.validate()?;
+        self.header.validate()?;
+        self.footer.validate()?;
         self.index.validate()?;
         self.table.validate()
     }
@@ -102,10 +115,63 @@ mod tests {
         assert!((theme.typography.code_min_size_em - 0.6).abs() < f64::EPSILON);
         assert_eq!(theme.caption, Caption::default());
         assert_eq!(theme.heading, Heading::default());
+        assert_eq!(theme.header, Header::default());
+        assert_eq!(theme.footer, Footer::default());
         assert_eq!(theme.index.columns, 2);
         assert_eq!(theme.index.column_gap_pt, Some(12.0));
+        assert_eq!(theme.page_numbering_start_at, PageNumberingStart::Body);
         assert_eq!(theme.table, Table::default());
         assert_eq!(Theme::default(), theme);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_named_and_body_relative_page_numbering_starts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (value, expected) in [
+            ("cover", PageNumberingStart::Cover),
+            ("title", PageNumberingStart::Title),
+            ("toc", PageNumberingStart::Toc),
+            ("after-toc", PageNumberingStart::AfterToc),
+            ("body", PageNumberingStart::Body),
+            (
+                "3",
+                PageNumberingStart::BodyPage(std::num::NonZeroUsize::try_from(3)?),
+            ),
+        ] {
+            let yaml = DEFAULT_THEME_YAML.replace(
+                "page_numbering_start_at: body",
+                &format!("page_numbering_start_at: {value}"),
+            );
+
+            assert_eq!(
+                Theme::from_yaml_str(&yaml)?.page_numbering_start_at,
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_page_numbering_starts() {
+        for value in ["0", "-1", "chapter"] {
+            let yaml = DEFAULT_THEME_YAML.replace(
+                "page_numbering_start_at: body",
+                &format!("page_numbering_start_at: {value}"),
+            );
+
+            assert!(Theme::from_yaml_str(&yaml).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn defaults_page_numbering_start_when_omitted() -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = DEFAULT_THEME_YAML.replace("page_numbering_start_at: body\n", "");
+
+        assert_eq!(
+            Theme::from_yaml_str(&yaml)?.page_numbering_start_at,
+            PageNumberingStart::Body
+        );
         Ok(())
     }
 
@@ -155,6 +221,100 @@ mod tests {
 
         assert_eq!(theme.heading, Heading::default());
         Ok(())
+    }
+
+    #[test]
+    fn accepts_header_and_footer_configuration() -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = DEFAULT_THEME_YAML
+            .replace("header:\n  align: left", "header:\n  align: right")
+            .replace("  font_size_pt: 11.0", "  font_size_pt: 10.0")
+            .replace("  font_weight: 500", "  font_weight: 600")
+            .replace("  logo_height_pt: 22.0", "  logo_height_pt: 18.0")
+            .replace("  show_on_page_one: false", "  show_on_page_one: true")
+            .replace("  font_size_pt: 9.0", "  font_size_pt: 8.0")
+            .replace(
+                "  page_number_position: center",
+                "  page_number_position: left",
+            );
+
+        let theme = Theme::from_yaml_str(&yaml)?;
+
+        assert_eq!(theme.header.align, HeaderAlignment::Right);
+        assert!((theme.header.font_size_pt - 10.0).abs() < f64::EPSILON);
+        assert_eq!(theme.header.font_weight, 600);
+        assert!((theme.header.logo_height_pt - 18.0).abs() < f64::EPSILON);
+        assert!(theme.header.show_on_page_one);
+        assert!((theme.footer.font_size_pt - 8.0).abs() < f64::EPSILON);
+        assert_eq!(theme.footer.page_number_position, PageNumberPosition::Left);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_header_and_footer_placement() {
+        for (original, replacement) in [
+            ("header:\n  align: left", "header:\n  align: diagonal"),
+            (
+                "page_number_position: center",
+                "page_number_position: diagonal",
+            ),
+        ] {
+            assert!(
+                Theme::from_yaml_str(&DEFAULT_THEME_YAML.replace(original, replacement)).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn defaults_header_and_footer_configuration_when_omitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = DEFAULT_THEME_YAML.replace(
+            concat!(
+                "header:\n",
+                "  align: left\n",
+                "  font_size_pt: 11.0\n",
+                "  font_weight: 500\n",
+                "  logo_height_pt: 22.0\n",
+                "  show_on_page_one: false\n",
+                "footer:\n",
+                "  font_size_pt: 9.0\n",
+                "  page_number_position: center\n",
+            ),
+            "",
+        );
+
+        let theme = Theme::from_yaml_str(&yaml)?;
+
+        assert_eq!(theme.header, Header::default());
+        assert_eq!(theme.footer, Footer::default());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_header_and_footer_configuration() {
+        for (original, replacement, field) in [
+            (
+                "font_size_pt: 11.0",
+                "font_size_pt: 0.0",
+                "header.font_size_pt",
+            ),
+            ("font_weight: 500", "font_weight: 99", "header.font_weight"),
+            (
+                "logo_height_pt: 22.0",
+                "logo_height_pt: -.inf",
+                "header.logo_height_pt",
+            ),
+            (
+                "font_size_pt: 9.0",
+                "font_size_pt: 0.0",
+                "footer.font_size_pt",
+            ),
+        ] {
+            let result = Theme::from_yaml_str(&DEFAULT_THEME_YAML.replace(original, replacement));
+            assert!(
+                matches!(&result, Err(Error::Validation { field: actual, .. }) if actual == field),
+                "unexpected result for {field}: {result:?}",
+            );
+        }
     }
 
     #[test]

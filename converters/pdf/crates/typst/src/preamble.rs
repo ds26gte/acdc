@@ -4,11 +4,12 @@
 use std::fmt::Write as _;
 
 use acdc_pdf_theme::{
-    CaptionAlignment, CaptionFontStyle, EMOJI_FONT_FAMILY, FontStack, Palette, Theme,
+    CaptionAlignment, CaptionFontStyle, EMOJI_FONT_FAMILY, FontStack, Footer, Header,
+    HeaderAlignment, PageNumberPosition, Palette, Theme,
 };
 
 use crate::{
-    DocumentMetadata, EmitOptions, PageSize,
+    DocumentMetadata, EmitOptions, PageLayout, PageSize,
     escape::{escape_markup, escape_string},
     writer::Writer,
 };
@@ -73,22 +74,46 @@ fn write_page(out: &mut String, theme: &Theme, options: &EmitOptions) {
     let palette = &theme.palette;
     let spacing = &theme.spacing;
 
-    let _ = write!(
-        out,
-        "#set page(paper: \"{}\", margin: (x: {}cm, y: {}cm)",
-        options.page.paper(),
-        spacing.margin_x_cm,
-        spacing.margin_y_cm,
-    );
+    if let Some(paper_name) = typst_paper_name(options.page) {
+        let _ = write!(out, "#set page(paper: \"{paper_name}\"");
+        if options.page_layout == PageLayout::Landscape {
+            out.push_str(", flipped: true");
+        }
+    } else {
+        let dimensions = options.page.dimensions(options.page_layout);
+        let _ = write!(
+            out,
+            "#set page(width: {}pt, height: {}pt",
+            dimensions.width_points(),
+            dimensions.height_points(),
+        );
+    }
+    if let Some(margin) = options.page_margin {
+        let _ = write!(
+            out,
+            ", margin: (top: {}pt, right: {}pt, bottom: {}pt, left: {}pt)",
+            margin.top_points(),
+            margin.right_points(),
+            margin.bottom_points(),
+            margin.left_points(),
+        );
+    } else {
+        let _ = write!(
+            out,
+            ", margin: (x: {}cm, y: {}cm)",
+            spacing.margin_x_cm, spacing.margin_y_cm,
+        );
+    }
     if !options.plain {
         let _ = write!(out, ", fill: {}", color(&palette.page_bg));
-        if let Some(header) = header_content(options, palette) {
+        if let Some(header) = header_content(options, palette, &theme.header) {
             let _ = write!(out, ", header: {header}");
         }
     }
     // The watermark annotations show even under `--plain`.
     if let Some(footer) = footer_content(
         palette,
+        &theme.footer,
         options.watermark.as_deref(),
         options.watermark_timestamp.as_deref(),
         !options.plain,
@@ -103,6 +128,19 @@ fn write_page(out: &mut String, theme: &Theme, options: &EmitOptions) {
         );
     }
     out.push_str(")\n");
+}
+
+const fn typst_paper_name(page: PageSize) -> Option<&'static str> {
+    match page {
+        PageSize::A3 => Some("a3"),
+        PageSize::A4 => Some("a4"),
+        PageSize::A5 => Some("a5"),
+        PageSize::Executive => Some("us-executive"),
+        PageSize::Legal => Some("us-legal"),
+        PageSize::Letter => Some("us-letter"),
+        PageSize::Tabloid => Some("us-tabloid"),
+        PageSize::Custom(_) => None,
+    }
 }
 
 /// Base text, paragraph, heading, and inline-span styling.
@@ -393,10 +431,8 @@ fn write_helpers(out: &mut String, theme: &Theme) {
     );
 }
 
-/// Builds a running header from the configured logo and title.
-///
-/// The header starts after page 1 so it does not repeat the document title.
-fn header_content(options: &EmitOptions, palette: &Palette) -> Option<String> {
+/// Builds a page header from the configured logo and title.
+fn header_content(options: &EmitOptions, palette: &Palette, header: &Header) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(logo) = &options.logo {
         let mut path = String::new();
@@ -404,23 +440,36 @@ fn header_content(options: &EmitOptions, palette: &Palette) -> Option<String> {
         path.push('"');
         crate::escape::escape_string(&mut path, logo);
         path.push('"');
-        parts.push(format!("#box(baseline: 30%, image({path}, height: 22pt))"));
+        parts.push(format!(
+            "#box(baseline: 30%, image({path}, height: {}pt))",
+            header.logo_height_pt
+        ));
     }
-    if let Some(title) = &options.running_header_title {
+    if let Some(title) = &options.page_header_title {
         let mut escaped = String::new();
         escape_markup(&mut escaped, title, true);
         parts.push(format!(
-            "#text(fill: {}, weight: 500, size: 11pt)[{escaped}]",
+            "#text(fill: {}, weight: {}, size: {}pt)[{escaped}]",
             color(&palette.accent),
+            header.font_weight,
+            header.font_size_pt,
         ));
     }
     if parts.is_empty() {
         return None;
     }
-    Some(format!(
-        "context if counter(page).get().first() > 1 {{ align(left + horizon)[{}] }}",
+    let content = format!(
+        "align({} + horizon)[{}]",
+        header_alignment(header.align),
         parts.join(" #h(0.6em) ")
-    ))
+    );
+    if header.show_on_page_one {
+        Some(content)
+    } else {
+        Some(format!(
+            "context if counter(page).get().first() > 1 {{ {content} }}"
+        ))
+    }
 }
 
 /// Build a diagonal, semi-transparent gray watermark placed behind the page
@@ -434,11 +483,12 @@ fn watermark_background(text: &str, palette: &Palette) -> String {
     )
 }
 
-/// Build the running footer: an optional watermark label (left), the page number
-/// (centre, only when branded), and an optional timestamp (right), all muted.
+/// Build the page footer: an optional watermark label (left), the themed page
+/// number (only when branded), and an optional timestamp (right), all muted.
 /// Returns `None` when there is nothing to show.
 fn footer_content(
     palette: &Palette,
+    footer: &Footer,
     watermark: Option<&str>,
     timestamp: Option<&str>,
     show_page: bool,
@@ -446,33 +496,45 @@ fn footer_content(
     if watermark.is_none() && timestamp.is_none() && !show_page {
         return None;
     }
-    let cell = |alignment: &str, body: String| format!("align({alignment})[{body}]");
-    let left = cell("left", escaped_or_empty(watermark));
-    let center = cell(
-        "center",
-        if show_page {
-            "#context counter(page).display()".to_string()
-        } else {
-            String::new()
-        },
-    );
-    let right = cell("right", escaped_or_empty(timestamp));
+    let mut left = Vec::new();
+    let mut center = Vec::new();
+    let mut right = Vec::new();
+    if let Some(watermark) = watermark {
+        left.push(escaped_content(watermark));
+    }
+    if show_page {
+        let page_number_slot = match footer.page_number_position {
+            PageNumberPosition::Left => &mut left,
+            PageNumberPosition::Center => &mut center,
+            PageNumberPosition::Right => &mut right,
+        };
+        page_number_slot.push("#context counter(page).display()".to_owned());
+    }
+    if let Some(timestamp) = timestamp {
+        right.push(escaped_content(timestamp));
+    }
+    let left = left.join(" #h(0.6em) ");
+    let center = center.join(" #h(0.6em) ");
+    let right = right.join(" #h(0.6em) ");
     Some(format!(
-        "text(fill: {}, size: 9pt)[#grid(columns: (1fr, 1fr, 1fr), {left}, {center}, {right})]",
+        "text(fill: {}, size: {}pt)[#grid(columns: (1fr, 1fr, 1fr), align(left)[{left}], align(center)[{center}], align(right)[{right}])]",
         color(&palette.counter),
+        footer.font_size_pt,
     ))
 }
 
-/// Escape optional text for a content block, or the empty string if absent.
-fn escaped_or_empty(text: Option<&str>) -> String {
-    match text {
-        Some(text) => {
-            let mut escaped = String::new();
-            escape_markup(&mut escaped, text, true);
-            escaped
-        }
-        None => String::new(),
+const fn header_alignment(alignment: HeaderAlignment) -> &'static str {
+    match alignment {
+        HeaderAlignment::Left => "left",
+        HeaderAlignment::Center => "center",
+        HeaderAlignment::Right => "right",
     }
+}
+
+fn escaped_content(text: &str) -> String {
+    let mut escaped = String::new();
+    escape_markup(&mut escaped, text, true);
+    escaped
 }
 
 /// Format a colour string as a safely quoted Typst `rgb(…)` call.
@@ -524,19 +586,10 @@ fn string_literal(value: &str) -> String {
     literal
 }
 
-impl PageSize {
-    /// The Typst paper name for this page size.
-    pub(crate) fn paper(self) -> &'static str {
-        match self {
-            PageSize::A4 => "a4",
-            PageSize::Letter => "us-letter",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{PageGeometryError, PageMargins, PageSize};
 
     fn stack(brand: Option<&str>, fallback: &[&str]) -> FontStack {
         FontStack {
@@ -566,6 +619,93 @@ mod tests {
                 "  description: \"First line\\nSecond line\",\n",
                 "  keywords: \"alpha, beta\",\n",
                 ")\n",
+            )
+        );
+    }
+
+    #[test]
+    fn landscape_page_setup_flips_the_named_paper() {
+        let options = EmitOptions {
+            page: PageSize::Legal,
+            page_layout: PageLayout::Landscape,
+            ..EmitOptions::default()
+        };
+        let mut out = String::new();
+
+        write_page(&mut out, &Theme::default(), &options);
+
+        assert!(out.starts_with("#set page(paper: \"us-legal\", flipped: true, margin:"));
+    }
+
+    #[test]
+    fn custom_page_setup_emits_dimensions_and_margins() -> Result<(), PageGeometryError> {
+        let options = EmitOptions {
+            page: PageSize::try_custom(612.0, 792.0)?,
+            page_layout: PageLayout::Landscape,
+            page_margin: Some(PageMargins::try_new(36.0, 54.0, 72.0, 90.0)?),
+            ..EmitOptions::default()
+        };
+        let mut out = String::new();
+
+        write_page(&mut out, &Theme::default(), &options);
+
+        assert!(out.starts_with(concat!(
+            "#set page(width: 792pt, height: 612pt, ",
+            "margin: (top: 36pt, right: 54pt, bottom: 72pt, left: 90pt)",
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn page_header_uses_theme_placement_and_typography() {
+        let mut theme = Theme::default();
+        theme.header.align = HeaderAlignment::Right;
+        theme.header.font_size_pt = 10.0;
+        theme.header.font_weight = 600;
+        theme.header.logo_height_pt = 18.0;
+        theme.header.show_on_page_one = true;
+        let options = EmitOptions {
+            logo: Some("logo.svg".to_owned()),
+            page_header_title: Some("Manual".to_owned()),
+            ..EmitOptions::default()
+        };
+
+        assert_eq!(
+            header_content(&options, &theme.palette, &theme.header),
+            Some(
+                concat!(
+                    "align(right + horizon)[",
+                    "#box(baseline: 30%, image(\"logo.svg\", height: 18pt)) ",
+                    "#h(0.6em) #text(fill: rgb(\"#374151\"), weight: 600, ",
+                    "size: 10pt)[Manual]]",
+                )
+                .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn page_footer_uses_theme_size_and_page_number_position() {
+        let mut theme = Theme::default();
+        theme.footer.font_size_pt = 8.0;
+        theme.footer.page_number_position = PageNumberPosition::Left;
+
+        assert_eq!(
+            footer_content(
+                &theme.palette,
+                &theme.footer,
+                Some("DRAFT"),
+                Some("2026-08-26"),
+                true,
+            ),
+            Some(
+                concat!(
+                    "text(fill: rgb(\"#9ca3af\"), size: 8pt)[",
+                    "#grid(columns: (1fr, 1fr, 1fr), ",
+                    "align(left)[DRAFT #h(0.6em) #context counter(page).display()], ",
+                    "align(center)[], align(right)[2026-08-26])]",
+                )
+                .to_owned()
             )
         );
     }

@@ -16,6 +16,8 @@ Major revamp of the manpage converter to match asciidoctor output much more clos
 
 ### Added
 
+- Title-based shorthand cross-references now resolve generated and explicit
+  section IDs before selecting their displayed reference text.
 - Cross-references preserve formatted explicit text through supported nested
   inline macros. Empty references to captioned blocks honor source-order
   `xrefstyle=basic`, `short`, and `full`, including custom and disabled
@@ -25,7 +27,7 @@ Major revamp of the manpage converter to match asciidoctor output much more clos
 - Inline icon macros render their explicit alternative text, or a readable
   form of their target when no alternative is set, matching Asciidoctor.
 - Ordered lists honor a positive `start` value, including on nested lists.
-  Explicit alphabetic and Roman styles remain an ACDC extension; Asciidoctor's
+  Explicit alphabetic and Roman styles remain an acdc extension; Asciidoctor's
   manpage backend uses decimal markers for those styles.
 - Manpage conversion attributes now include the `manpage` backend and
   base-backend, `man` file type, `.man` default output suffix, implied manpage
@@ -86,11 +88,25 @@ Major revamp of the manpage converter to match asciidoctor output much more clos
 
 ### Fixed
 
+- Sections with a named `reftext` now use it for natural-reference and explicit-ID
+  display text. Their titles are not retained as second natural aliases, and
+  formatted labels keep their roff formatting, matching Asciidoctor.
+- Plain visible shorthand cross-references now match section titles containing
+  `pass:[...]` or `+...+` content. A shorthand target containing a passthrough
+  remains unresolved and displays its visible text, matching the Asciidoctor
+  manpage backend.
+- When `:compat-mode:` is active at a title-based shorthand cross-reference,
+  it displays its bracketed unresolved fallback. Source-order changes apply
+  only to later references, and explicit local IDs still display the section
+  heading, matching the Asciidoctor manpage backend.
+- Interdocument `xref:` macros no longer display a same-named local section's
+  heading. They keep the manpage converter's bracketed external-reference
+  fallback, while natural shorthand references remain local.
 - Description lists now preserve nested ownership, repeated continuations,
   formatted terms, titled boundaries, named styles, and trailing unanswered
   Q&A items, matching the Asciidoctor manpage backend.
 - Table cells now apply strong, emphasis, literal, and monospace styles,
-  matching the Asciidoctor manpage backend. ACDC's span and alignment extension
+  matching the Asciidoctor manpage backend. acdc's span and alignment extension
   now applies column alignment by source-cell order after spans.
 - A custom title on the first manpage name section now gets the same special
   spacing, embedded-output handling, and section-order validation as `NAME`,

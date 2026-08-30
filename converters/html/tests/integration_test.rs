@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use acdc_converters_core::{Converter, GeneratorMetadata, Options as ConverterOptions};
+use acdc_converters_core::{
+    Converter, GeneratorMetadata, Options as ConverterOptions, visitor::Visitor,
+};
 use acdc_converters_dev::output::remove_lines_trailing_whitespace;
-use acdc_converters_html::{HtmlVariant, Processor, RenderOptions};
-use acdc_parser::{AttributeValue, Options as ParserOptions, SafeMode};
+use acdc_converters_html::{HtmlVariant, HtmlVisitor, Processor, RenderOptions};
+use acdc_parser::{AttributeValue, DocumentAttributes, Options as ParserOptions, SafeMode};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -33,8 +35,7 @@ fn run_fixture_test(
 
     let expected_path = expected_dir.join(file_name).with_extension("html");
 
-    let parser_options =
-        ParserOptions::with_attributes(acdc_converters_core::default_rendering_attributes());
+    let parser_options = ParserOptions::with_attributes(DocumentAttributes::default());
     let parsed = acdc_parser::parse_file(path, &parser_options)?;
     let doc = parsed.document();
 
@@ -128,7 +129,7 @@ fn convert_string_with_variant(
     extra_attrs: &[(&str, AttributeValue)],
     variant: HtmlVariant,
 ) -> Result<String, Error> {
-    let mut attrs = acdc_converters_core::default_rendering_attributes();
+    let mut attrs = DocumentAttributes::default();
     for (k, v) in extra_attrs {
         attrs.insert((*k).into(), v.clone());
     }
@@ -149,9 +150,83 @@ fn convert_string_with_variant(
 }
 
 #[test]
+fn standalone_description_and_keywords_are_escaped_when_present() -> Result<(), Error> {
+    let populated = "= Metadata Test\n:description: Five < six & \"quoted\"\n:keywords: alpha, <beta>, gamma & delta\n\nBody.\n";
+    let empty = "= Empty Metadata\n:description:\n:keywords:\n\nBody.\n";
+    let unset = "= Unset Metadata\n\nBody.\n";
+
+    for variant in [HtmlVariant::Standard, HtmlVariant::Semantic] {
+        let html = convert_string_with_variant(populated, &[], variant)?;
+        assert!(
+            html.contains(
+                "<meta name=\"description\" content=\"Five &lt; six &amp; &quot;quoted&quot;\">"
+            ),
+            "{variant}: {html}"
+        );
+        assert!(
+            html.contains(
+                "<meta name=\"keywords\" content=\"alpha, &lt;beta&gt;, gamma &amp; delta\">"
+            ),
+            "{variant}: {html}"
+        );
+
+        let html = convert_string_with_variant(empty, &[], variant)?;
+        assert!(
+            html.contains("<meta name=\"description\" content=\"\">")
+                && html.contains("<meta name=\"keywords\" content=\"\">"),
+            "{variant}: {html}"
+        );
+
+        let html = convert_string_with_variant(unset, &[], variant)?;
+        assert!(
+            !html.contains("<meta name=\"description\""),
+            "{variant}: {html}"
+        );
+        assert!(
+            !html.contains("<meta name=\"keywords\""),
+            "{variant}: {html}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unhandled_parser_block_warning_is_structured() -> Result<(), Error> {
+    let parsed = acdc_parser::parse("text", &ParserOptions::default())?;
+    let block = parsed
+        .document()
+        .blocks
+        .first()
+        .ok_or("missing parsed block")?;
+    let processor = Processor::new_with_variant(
+        ConverterOptions::default(),
+        parsed.document().attributes.clone(),
+        HtmlVariant::Standard,
+    );
+    let source = acdc_converters_core::WarningSource::new("html").with_variant("standard");
+    let mut warnings = Vec::new();
+    {
+        let diagnostics = acdc_converters_core::Diagnostics::new(&source, &mut warnings);
+        let mut visitor = HtmlVisitor::new(
+            Vec::new(),
+            std::rc::Rc::new(processor),
+            RenderOptions::default(),
+            diagnostics,
+        );
+        visitor.visit_unhandled_block(block)?;
+    }
+
+    let warning = warnings.first().ok_or("missing unhandled block warning")?;
+    assert_eq!(warning.source.converter, "html");
+    assert_eq!(warning.source.variant.as_deref(), Some("standard"));
+    assert!(warning.message.contains("omitted from HTML output"));
+    assert!(warning.advice().is_some());
+    Ok(())
+}
+
+#[test]
 fn deprecated_role_warning_is_returned_in_conversion_result() -> Result<(), Error> {
-    let parser_options =
-        ParserOptions::with_attributes(acdc_converters_core::default_rendering_attributes());
+    let parser_options = ParserOptions::with_attributes(DocumentAttributes::default());
     let parsed = acdc_parser::parse("[big]#large#\n", &parser_options)?;
     let doc = parsed.document();
     let converter_options = ConverterOptions::builder().embedded(true).build();
@@ -224,6 +299,82 @@ fn a_cross_reference_inside_reference_text_is_not_a_nested_link() -> Result<(), 
         html.contains("Ref: <a href=\"#a\">See [a] again</a>."),
         "{html}"
     );
+    Ok(())
+}
+
+#[test]
+fn interdocument_xref_macros_do_not_link_to_matching_local_titles() -> Result<(), Error> {
+    let input = "Empty: xref:Other.adoc[].\n\nExplicit: xref:Other.adoc[Other].\n\nShorthand: <<Other.adoc>>.\n\nFragment: xref:Foo#Bar[].\n\n== Other.adoc\n\n== Foo#Bar\n";
+
+    for variant in [HtmlVariant::Standard, HtmlVariant::Semantic] {
+        let parsed = acdc_parser::parse(input, &ParserOptions::default())?;
+        let doc = parsed.document();
+        let processor = Processor::new_with_variant(
+            ConverterOptions::default(),
+            doc.attributes.clone(),
+            variant,
+        );
+        let mut output = Vec::new();
+        let mut warnings = Vec::new();
+        let source = acdc_converters_core::WarningSource::new("html");
+        let mut diagnostics = acdc_converters_core::Diagnostics::new(&source, &mut warnings);
+        processor.convert_to_writer(
+            doc,
+            &mut output,
+            &RenderOptions::default(),
+            &mut diagnostics,
+        )?;
+        let html = String::from_utf8(output)?;
+
+        for expected in [
+            "Empty: <a href=\"Other.html\">Other.html</a>.",
+            "Explicit: <a href=\"Other.html\">Other</a>.",
+            "Shorthand: <a href=\"#_other_adoc\">Other.adoc</a>.",
+            "Fragment: <a href=\"Foo.html#Bar\">Foo.html</a>.",
+        ] {
+            assert!(html.contains(expected), "expected {expected:?} in {html}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn passthroughs_are_restored_before_natural_xref_resolution() -> Result<(), Error> {
+    let input = "Title macro: <<Pass raw Title>>.\nTitle plus: <<Plus raw Title>>.\nTarget macro: <<Target pass:[raw] Title>>.\nTarget plus: <<Target +raw+ Title>>.\nMissing macro: <<Missing pass:[raw] Title>>.\nMissing plus: <<Missing +raw+ Title>>.\nControl: <<Control Title>>.\n\n== Pass pass:[raw] Title\n\n== Plus +raw+ Title\n\n== Target raw Title\n\n== Control Title\n";
+
+    for variant in [HtmlVariant::Standard, HtmlVariant::Semantic] {
+        let parsed = acdc_parser::parse(input, &ParserOptions::default())?;
+        let doc = parsed.document();
+        let processor = Processor::new_with_variant(
+            ConverterOptions::default(),
+            doc.attributes.clone(),
+            variant,
+        );
+        let mut output = Vec::new();
+        let mut warnings = Vec::new();
+        let source = acdc_converters_core::WarningSource::new("html");
+        let mut diagnostics = acdc_converters_core::Diagnostics::new(&source, &mut warnings);
+        processor.convert_to_writer(
+            doc,
+            &mut output,
+            &RenderOptions::default(),
+            &mut diagnostics,
+        )?;
+        let html = String::from_utf8(output)?;
+
+        for expected in [
+            "Title macro: <a href=\"#_pass_raw_title\">Pass raw Title</a>.",
+            "Title plus: <a href=\"#_plus_raw_title\">Plus raw Title</a>.",
+            "Target macro: <a href=\"#Target raw Title\">[Target raw Title]</a>.",
+            "Target plus: <a href=\"#Target raw Title\">[Target raw Title]</a>.",
+            "Missing macro: <a href=\"#Missing raw Title\">[Missing raw Title]</a>.",
+            "Missing plus: <a href=\"#Missing raw Title\">[Missing raw Title]</a>.",
+            "Control: <a href=\"#_control_title\">Control Title</a>.",
+        ] {
+            assert!(html.contains(expected), "expected {expected:?} in {html}");
+        }
+        assert!(!html.contains('\u{fffd}'), "{html}");
+    }
     Ok(())
 }
 
@@ -668,7 +819,7 @@ mod copycss {
         let html_path = tmp.path().join("output.html");
 
         let input = "= Title\n:linkcss:\n\nHello.\n";
-        let mut attrs = acdc_converters_core::default_rendering_attributes();
+        let mut attrs = DocumentAttributes::default();
         attrs.insert("linkcss".into(), AttributeValue::Bool(true));
         attrs.insert(
             "copycss".into(),
@@ -730,7 +881,7 @@ mod copycss {
         std::fs::write(&custom_css_path, "body { color: red; }")?;
 
         let input = "= Title\n:linkcss:\n:stylesheet: target.css\n\nHello.\n";
-        let mut attrs = acdc_converters_core::default_rendering_attributes();
+        let mut attrs = DocumentAttributes::default();
         attrs.insert("linkcss".into(), AttributeValue::Bool(true));
         attrs.insert(
             "copycss".into(),
@@ -792,7 +943,7 @@ mod copycss {
         let html_path = tmp.path().join("output.html");
 
         let input = ":!stylesheet:\n:linkcss:\n\nHello.\n";
-        let mut attrs = acdc_converters_core::default_rendering_attributes();
+        let mut attrs = DocumentAttributes::default();
         attrs.insert("stylesheet".into(), AttributeValue::Bool(false));
         attrs.insert("linkcss".into(), AttributeValue::Bool(true));
         attrs.insert(
@@ -844,7 +995,7 @@ mod copycss {
         let html_path = tmp.path().join("output.html");
 
         let input = "= Title\n:linkcss:\n\nHello.\n";
-        let mut attrs = acdc_converters_core::default_rendering_attributes();
+        let mut attrs = DocumentAttributes::default();
         attrs.insert("linkcss".into(), AttributeValue::Bool(true));
         attrs.insert(
             "copycss".into(),
@@ -1290,7 +1441,7 @@ mod toc_footnote {
 
     /// Helper: convert an `AsciiDoc` string to embedded HTML (mirrors WASM editor path).
     fn convert_embedded(input: &str) -> Result<String, Error> {
-        let attrs = acdc_converters_core::default_rendering_attributes();
+        let attrs = DocumentAttributes::default();
         let parser_options = ParserOptions::with_attributes(attrs);
         let parsed = acdc_parser::parse(input, &parser_options)?;
         let doc = parsed.document();

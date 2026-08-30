@@ -32,13 +32,13 @@ use acdc_converters_core::{
 };
 use acdc_parser::{
     Admonition, Author, Block, BlockMetadata, CaptionKind, DelimitedBlock, DelimitedBlockType,
-    Document, DocumentAttributes, IndexTermRelationship, InlineMacro, InlineNode, ListItem,
-    Location, Reference, SafeMode, Source, SourceLocation, Table,
+    Document, DocumentAttributes, ElementAttributes, IndexTerm, IndexTermRelationship, InlineMacro,
+    InlineNode, ListItem, Location, Reference, SafeMode, Source, SourceLocation, Table,
 };
 use acdc_pdf_images::{
     Error as ImageError, ImageMap, ResolveConfig, ResolveFailure, SourcePolicy, resolve,
 };
-use acdc_pdf_render::{RenderConfig, render_pdf};
+use acdc_pdf_render::{NamedDestination, RenderConfig, render_pdf};
 use acdc_pdf_theme::{PageNumberingStart, Theme};
 use acdc_pdf_typst::{
     DocumentLocale, DocumentMetadata, EmitOptions, Error as TypstError, Writer, preamble,
@@ -363,7 +363,19 @@ impl Processor<'_> {
         let emit_duration = emit_start.elapsed();
 
         let render_start = Instant::now();
-        let mut rendered = render_pdf(&typst, &assets, &RenderConfig { font_dirs })?;
+        let named_destinations = preparation
+            .link_destination_ids
+            .iter()
+            .map(|id| NamedDestination::new(encode_label(id), id))
+            .collect();
+        let mut rendered = render_pdf(
+            &typst,
+            &assets,
+            &RenderConfig {
+                font_dirs,
+                named_destinations,
+            },
+        )?;
         if let Some(start) = page_numbering.conditional_arabic_start() {
             // Typst exports PDF labels only for fixed numbering patterns. A body-relative
             // transition uses a numbering function, so add its equivalent label ranges here.
@@ -1135,6 +1147,7 @@ fn collect_pdf_preparation(doc: &Document<'_>) -> PdfPreparation {
     let context = PreparationContext {
         attributes: &doc.attributes,
         icon_mode: IconMode::from(&doc.attributes),
+        references: &doc.references,
     };
     if let Some(header) = &doc.header {
         collect_inline_preparation(header.title.as_ref(), &context, &mut preparation);
@@ -1149,6 +1162,7 @@ fn collect_pdf_preparation(doc: &Document<'_>) -> PdfPreparation {
 struct PreparationContext<'attributes, 'source> {
     attributes: &'attributes DocumentAttributes<'source>,
     icon_mode: IconMode,
+    references: &'attributes HashMap<&'source str, Reference<'source>>,
 }
 
 #[derive(Default)]
@@ -1162,6 +1176,7 @@ struct PdfPreparation {
     has_autofit_blocks: bool,
     admonition_image_icon_count: usize,
     populated_index_sections: HashSet<String>,
+    link_destination_ids: Vec<String>,
 }
 
 struct ImageIconReference {
@@ -1542,37 +1557,27 @@ fn collect_inline_preparation(
                 collect_inline_preparation(&footnote.content, context, preparation);
             }
             InlineNode::Macro(InlineMacro::Url(url)) => {
+                collect_link_destination(&url.attributes, &url.location, context, preparation);
                 collect_inline_preparation(&url.text, context, preparation);
             }
             InlineNode::Macro(InlineMacro::Link(link)) => {
+                collect_link_destination(&link.attributes, &link.location, context, preparation);
                 collect_inline_preparation(&link.text, context, preparation);
             }
             InlineNode::Macro(InlineMacro::Mailto(mailto)) => {
+                collect_link_destination(
+                    &mailto.attributes,
+                    &mailto.location,
+                    context,
+                    preparation,
+                );
                 collect_inline_preparation(&mailto.text, context, preparation);
             }
             InlineNode::Macro(InlineMacro::CrossReference(xref)) => {
                 collect_inline_preparation(&xref.text, context, preparation);
             }
             InlineNode::Macro(InlineMacro::IndexTerm(term)) => {
-                preparation.has_index_terms = true;
-                collect_inline_preparation(term.term(), context, preparation);
-                if let Some(secondary) = term.secondary() {
-                    collect_inline_preparation(secondary, context, preparation);
-                }
-                if let Some(tertiary) = term.tertiary() {
-                    collect_inline_preparation(tertiary, context, preparation);
-                }
-                match term.relationship.as_ref() {
-                    Some(IndexTermRelationship::See { target }) => {
-                        collect_inline_preparation(target, context, preparation);
-                    }
-                    Some(IndexTermRelationship::SeeAlso { targets }) => {
-                        for target in targets {
-                            collect_inline_preparation(target, context, preparation);
-                        }
-                    }
-                    None | Some(_) => {}
-                }
+                collect_index_term_preparation(term, context, preparation);
             }
             InlineNode::PlainText(_)
             | InlineNode::RawText(_)
@@ -1584,6 +1589,50 @@ fn collect_inline_preparation(
             | InlineNode::CalloutRef(_)
             | _ => {}
         }
+    }
+}
+
+fn collect_index_term_preparation(
+    term: &IndexTerm<'_>,
+    context: &PreparationContext<'_, '_>,
+    preparation: &mut PdfPreparation,
+) {
+    preparation.has_index_terms = true;
+    collect_inline_preparation(term.term(), context, preparation);
+    if let Some(secondary) = term.secondary() {
+        collect_inline_preparation(secondary, context, preparation);
+    }
+    if let Some(tertiary) = term.tertiary() {
+        collect_inline_preparation(tertiary, context, preparation);
+    }
+    match term.relationship.as_ref() {
+        Some(IndexTermRelationship::See { target }) => {
+            collect_inline_preparation(target, context, preparation);
+        }
+        Some(IndexTermRelationship::SeeAlso { targets }) => {
+            for target in targets {
+                collect_inline_preparation(target, context, preparation);
+            }
+        }
+        None | Some(_) => {}
+    }
+}
+
+fn collect_link_destination(
+    attributes: &ElementAttributes<'_>,
+    location: &Location,
+    context: &PreparationContext<'_, '_>,
+    preparation: &mut PdfPreparation,
+) {
+    let Some(id) = attributes.get_string("id") else {
+        return;
+    };
+    if context
+        .references
+        .get(id.as_ref())
+        .is_some_and(|reference| reference.location == *location)
+    {
+        preparation.link_destination_ids.push(id.into_owned());
     }
 }
 
@@ -2265,7 +2314,7 @@ mod tests {
     #[test]
     fn unbreakable_option_moves_fitting_listing_and_preserves_oversized_listing()
     -> Result<(), Box<dyn std::error::Error>> {
-        let prefix = "= ACDC Move probe\n\nFILL01 filler paragraph.\n\nFILL02 filler paragraph.\n\nFILL03 filler paragraph.\n\nFILL04 filler paragraph.\n\nFILL05 filler paragraph.\n\nFILL06 filler paragraph.\n\nFILL07 filler paragraph.\n\nFILL08 filler paragraph.\n\nFILL09 filler paragraph.\n\nFILL10 filler paragraph.\n\nFILL11 filler paragraph.\n\nFILL12 filler paragraph.\n\nFILL13 filler paragraph.\n\nFILL14 filler paragraph.\n\nFILL15 filler paragraph.\n\nFILL16 filler paragraph.\n\nFILL17 filler paragraph.\n\nFILL18 filler paragraph.\n\nFILL19 filler paragraph.\n\nFILL20 filler paragraph.\n\n.Target caption\n[listing%unbreakable]\n----\n";
+        let prefix = "= acdc Move probe\n\nFILL01 filler paragraph.\n\nFILL02 filler paragraph.\n\nFILL03 filler paragraph.\n\nFILL04 filler paragraph.\n\nFILL05 filler paragraph.\n\nFILL06 filler paragraph.\n\nFILL07 filler paragraph.\n\nFILL08 filler paragraph.\n\nFILL09 filler paragraph.\n\nFILL10 filler paragraph.\n\nFILL11 filler paragraph.\n\nFILL12 filler paragraph.\n\nFILL13 filler paragraph.\n\nFILL14 filler paragraph.\n\nFILL15 filler paragraph.\n\nFILL16 filler paragraph.\n\nFILL17 filler paragraph.\n\nFILL18 filler paragraph.\n\nFILL19 filler paragraph.\n\nFILL20 filler paragraph.\n\n.Target caption\n[listing%unbreakable]\n----\n";
         let fitting = format!(
             "{prefix}CODE01 target line\nCODE02 target line\nCODE03 target line\nCODE04 target line\nCODE05 target line\nCODE06 target line\nCODE07 target line\nCODE08 target line\n----\n\nAFTER target.\n"
         );
@@ -3090,6 +3139,151 @@ mod tests {
         }
 
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn interdocument_xref_macros_link_to_other_pdf_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = acdc_parser::parse(
+            "Empty: xref:Other.adoc[].\n\nExplicit: xref:Other.adoc[Other].\n\nShorthand: <<Other.adoc>>.\n\nFragment: xref:Foo#Bar[].\n\n== Other.adoc\n\n== Foo#Bar\n",
+            &acdc_parser::Options::default(),
+        )?;
+        let processor = Processor::new(Options::default(), parsed.document().attributes.clone());
+        let source = WarningSource::new("pdf");
+        let mut warnings = Vec::new();
+        let mut diagnostics = Diagnostics::new(&source, &mut warnings);
+
+        let typst = processor.convert_to_typst_source(parsed.document(), &mut diagnostics)?;
+        for expected in [
+            "#link(\"Other.pdf\")[#text(\"Other.pdf\")]".to_string(),
+            "#link(\"Other.pdf\")[#text(\"Other\")]".to_string(),
+            format!(
+                "#link(<{}>)[#text(\"Other.adoc\")]",
+                encode_label("_other_adoc")
+            ),
+            "#link(\"Foo.pdf#Bar\")[#text(\"Foo.pdf\")]".to_string(),
+        ] {
+            assert!(
+                typst.contains(&expected),
+                "expected {expected:?} in {typst}"
+            );
+        }
+
+        let rendered = render_pdf(&typst, &ImageMap::new(), &RenderConfig::default())?;
+        let pdf = lopdf::Document::load_mem(&rendered.pdf)?;
+        assert_eq!(
+            external_link_targets(&pdf),
+            ["Foo.pdf#Bar", "Other.pdf", "Other.pdf"]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn compat_mode_keeps_natural_reference_unresolved() -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = acdc_parser::parse(
+            "= Document\n:compat-mode:\n\nNatural: <<Syntax Highlighting>>.\n\nExplicit: <<_syntax_highlighting>>.\n\n== Syntax Highlighting\n",
+            &acdc_parser::Options::default(),
+        )?;
+        let processor = Processor::new(Options::default(), parsed.document().attributes.clone());
+        let source = WarningSource::new("pdf");
+        let mut warnings = Vec::new();
+        let mut diagnostics = Diagnostics::new(&source, &mut warnings);
+
+        let typst = processor.convert_to_typst_source(parsed.document(), &mut diagnostics)?;
+        let section_label = encode_label("_syntax_highlighting");
+        assert!(
+            typst.contains("#text(\"[Syntax Highlighting]\")"),
+            "{typst}"
+        );
+        assert_eq!(
+            typst.matches(&format!("#link(<{section_label}>)")).count(),
+            1
+        );
+
+        let rendered = render_pdf(&typst, &ImageMap::new(), &RenderConfig::default())?;
+        let pdf = lopdf::Document::load_mem(&rendered.pdf)?;
+        let pages = pdf.get_pages().keys().copied().collect::<Vec<_>>();
+        let text = pdf.extract_text(&pages)?;
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            normalized.contains("Natural: [Syntax Highlighting]."),
+            "{text}"
+        );
+        assert!(
+            normalized.contains("Explicit: Syntax Highlighting"),
+            "{text}"
+        );
+        let link_annotations = pdf
+            .objects
+            .values()
+            .filter(|object| {
+                object.as_dict().is_ok_and(|dictionary| {
+                    matches!(dictionary.get(b"Subtype"), Ok(lopdf::Object::Name(name)) if name == b"Link")
+                })
+            })
+            .count();
+        assert_eq!(link_annotations, 1);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn passthroughs_are_restored_before_natural_xref_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = acdc_parser::parse(
+            "Title macro: <<Pass raw Title>>.\nTitle plus: <<Plus raw Title>>.\nTarget macro: <<Target pass:[raw] Title>>.\nTarget plus: <<Target +raw+ Title>>.\nMissing macro: <<Missing pass:[raw] Title>>.\nMissing plus: <<Missing +raw+ Title>>.\nControl: <<Control Title>>.\n\n== Pass pass:[raw] Title\n\n== Plus +raw+ Title\n\n== Target raw Title\n\n== Control Title\n",
+            &acdc_parser::Options::default(),
+        )?;
+        let processor = Processor::new(Options::default(), parsed.document().attributes.clone());
+        let source = WarningSource::new("pdf");
+        let mut warnings = Vec::new();
+        let mut diagnostics = Diagnostics::new(&source, &mut warnings);
+
+        let typst = processor.convert_to_typst_source(parsed.document(), &mut diagnostics)?;
+        for (target, count) in [
+            ("_pass_raw_title", 1),
+            ("_plus_raw_title", 1),
+            ("_control_title", 1),
+        ] {
+            let label = encode_label(target);
+            assert_eq!(typst.matches(&format!("#link(<{label}>)")).count(), count);
+        }
+        assert_eq!(typst.matches("#text(\"[Target raw Title]\")").count(), 2);
+        assert_eq!(typst.matches("#text(\"[Missing raw Title]\")").count(), 2);
+        assert!(!typst.contains('\u{fffd}'), "{typst}");
+
+        let rendered = render_pdf(&typst, &ImageMap::new(), &RenderConfig::default())?;
+        let pdf = lopdf::Document::load_mem(&rendered.pdf)?;
+        let pages = pdf.get_pages().keys().copied().collect::<Vec<_>>();
+        let text = pdf.extract_text(&pages)?;
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for expected in [
+            "Title macro: Pass raw Title",
+            "Title plus: Plus raw Title",
+            "Target macro: [Target raw Title].",
+            "Target plus: [Target raw Title].",
+            "Missing macro: [Missing raw Title].",
+            "Missing plus: [Missing raw Title].",
+            "Control: Control Title",
+        ] {
+            assert!(
+                normalized.contains(expected),
+                "expected {expected:?} in {text:?}"
+            );
+        }
+        let link_annotations = pdf
+            .objects
+            .values()
+            .filter(|object| {
+                object.as_dict().is_ok_and(|dictionary| {
+                    matches!(dictionary.get(b"Subtype"), Ok(lopdf::Object::Name(name)) if name == b"Link")
+                })
+            })
+            .count();
+        assert_eq!(link_annotations, 3);
+        assert!(warnings.is_empty(), "{warnings:?}");
         Ok(())
     }
 

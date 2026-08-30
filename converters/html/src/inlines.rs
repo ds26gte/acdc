@@ -59,11 +59,12 @@ use acdc_converters_core::{
     xref::{XrefDisplay, interdocument_xref, resolve_xref},
 };
 use acdc_parser::{
-    AttributeValue, Autolink, Bold, Button, CalloutRef, CrossReference, CurvedApostrophe,
-    CurvedQuotation, ElementAttributes, Footnote, Form, Highlight, Icon, Image, IndexTerm,
-    IndexTermRelationship, InlineMacro, InlineNode, Italic, Keyboard, Link, Mailto, Menu,
-    Monospace, Pass, Plain, Raw, Stem, StemNotation, Subscript, Substitution, Superscript, Url,
-    Verbatim, parse_text_for_quotes, strip_quotes, substitute,
+    Anchor, AttributeValue, Autolink, Block, Bold, Button, CalloutRef, CrossReference,
+    CurvedApostrophe, CurvedQuotation, ElementAttributes, Footnote, Form, Highlight, Icon, Image,
+    IndexTerm, IndexTermRelationship, InlineMacro, InlineNode, Italic, Keyboard, Link, Mailto,
+    Menu, Monospace, Options as ParserOptions, Pass, Plain, Raw, Stem, StemNotation, Subscript,
+    Substitution, Superscript, Url, Verbatim, parse, parse_text_for_quotes, strip_quotes,
+    substitute,
 };
 
 use crate::{
@@ -154,6 +155,15 @@ pub(crate) fn escape_pcdata(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Escape literal text for a double-quoted HTML attribute value.
+pub(crate) fn escape_attribute(text: &str) -> String {
+    escape_pcdata(text).replace('"', "&quot;")
+}
+
+fn raw_fragment_placeholder(index: usize) -> String {
+    format!("\0{index}\0")
+}
+
 /// Extract the `role` attribute as a non-empty, unquoted string.
 ///
 /// Returns `None` when the attribute is absent, non-string, or empty after stripping quotes.
@@ -184,6 +194,12 @@ fn link_class_attr(role: Option<String>, bare: bool) -> String {
         (false, Some(role)) => format!(" class=\"{role}\""),
         (false, None) => String::new(),
     }
+}
+
+fn link_id_attr(attributes: &ElementAttributes<'_>) -> String {
+    attributes
+        .get_string("id")
+        .map_or_else(String::new, |id| format!(" id=\"{id}\""))
 }
 
 /// Extract `target` and `rel` attributes from `window` or `target` attribute values.
@@ -340,14 +356,99 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
                 Ok(())
             }
             InlineNode::InlineAnchor(anchor) if !options.toc_mode => {
-                write!(self.writer_mut(), "<a id=\"{}\"></a>", anchor.id)?;
+                self.render_inline_anchor(anchor, options, subs)
+            }
+            // TOC links cannot contain nested anchors.
+            InlineNode::InlineAnchor(_) => Ok(()),
+            _unsupported => {
+                self.diagnostics.warn_with_advice(
+                    "an unsupported parser inline variant was omitted from HTML output",
+                    "Use another backend for this document and report the unsupported construct.",
+                );
                 Ok(())
             }
-            // Explicit InlineAnchor arm for TOC mode (no nested anchors) plus a catch-all
-            // for future `#[non_exhaustive]` variants — both render nothing, but enumerating
-            // the anchor arm keeps `wildcard_enum_match_arm` satisfied.
-            InlineNode::InlineAnchor(_) | _ => Ok(()),
         }
+    }
+
+    fn render_inline_anchor(
+        &mut self,
+        anchor: &Anchor<'_>,
+        options: &RenderOptions,
+        subs: &[Substitution],
+    ) -> Result<(), Error> {
+        write!(self.writer_mut(), "<a id=\"{}\"></a>", anchor.id)?;
+        if !anchor.is_bibliography() {
+            return Ok(());
+        }
+
+        if let Some(source) = anchor
+            .xreflabel
+            .filter(|source| source.contains('+') || source.contains("pass:"))
+            && let Some(label) =
+                self.render_preprocessed_bibliography_label(source, options, subs)?
+        {
+            write!(self.writer_mut(), "{label}")?;
+            return Ok(());
+        }
+
+        let processor = Rc::clone(&self.processor);
+        let Some(label) = processor
+            .references
+            .get(anchor.id)
+            .and_then(|reference| reference.xreflabel.as_deref())
+        else {
+            write!(self.writer_mut(), "[{}]", escape_pcdata(anchor.id))?;
+            return Ok(());
+        };
+        let html = self.render_bibliography_inline_fragment(label, options, subs)?;
+        write!(self.writer_mut(), "{html}")?;
+        Ok(())
+    }
+
+    fn render_preprocessed_bibliography_label(
+        &mut self,
+        source: &str,
+        options: &RenderOptions,
+        subs: &[Substitution],
+    ) -> Result<Option<String>, Error> {
+        let wrapped = format!("({source})");
+        let parser_options =
+            ParserOptions::with_attributes(self.processor.document_attributes().clone());
+        let parsed = parse(&wrapped, &parser_options)?;
+        let Some(Block::Paragraph(paragraph)) = parsed.document().blocks.first() else {
+            return Ok(None);
+        };
+        let html = self.render_bibliography_inline_fragment(&paragraph.content, options, subs)?;
+        Ok(html
+            .strip_prefix('(')
+            .and_then(|html| html.strip_suffix(')'))
+            .map(|html| format!("[{html}]")))
+    }
+
+    fn render_bibliography_inline_fragment(
+        &mut self,
+        inlines: &[InlineNode<'_>],
+        options: &RenderOptions,
+        subs: &[Substitution],
+    ) -> Result<String, Error> {
+        let mut fragment_options = options.clone();
+        fragment_options.toc_mode = true;
+        let mut visitor = HtmlVisitor::new(
+            Vec::new(),
+            Rc::clone(&self.processor),
+            fragment_options,
+            self.diagnostics.reborrow(),
+        );
+        visitor.current_subs = subs.to_vec();
+        visitor.captured_raw_fragments = Some(Vec::new());
+        visitor.visit_inline_nodes(inlines)?;
+        let captured = visitor.captured_raw_fragments.take().unwrap_or_default();
+        let html = String::from_utf8(visitor.into_writer()).map_err(io::Error::other)?;
+        let mut html = html.replace('<', "&lt;").replace('>', "&gt;");
+        for (index, raw) in captured.iter().enumerate() {
+            html = html.replace(&raw_fragment_placeholder(index), raw);
+        }
+        Ok(html)
     }
 
     /// Render one of the simple inline-formatting nodes (bold, italic, monospace, sup, sub).
@@ -457,7 +558,13 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         } else {
             passthrough_substitution_text(content, &r.subs, self.text_boundaries())
         };
-        write!(self.writer_mut(), "{text}")?;
+        if let Some(captured) = self.captured_raw_fragments.as_mut() {
+            let index = captured.len();
+            captured.push(text);
+            write!(self.writer_mut(), "{}", raw_fragment_placeholder(index))?;
+        } else {
+            write!(self.writer_mut(), "{text}")?;
+        }
         Ok(())
     }
 
@@ -796,11 +903,12 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             return Ok(());
         }
 
+        let id_attr = link_id_attr(&l.attributes);
         let class_attr = link_class_attr(role_from_attrs(&l.attributes), l.text.is_empty());
         let target_attr = window_attrs(&l.attributes);
         write!(
             self.writer_mut(),
-            "<a href=\"{}\"{class_attr}{target_attr}>",
+            "<a href=\"{}\"{id_attr}{class_attr}{target_attr}>",
             escape_href(&target_str)
         )?;
         if l.text.is_empty() {
@@ -900,11 +1008,12 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             return Ok(());
         }
 
+        let id_attr = link_id_attr(&u.attributes);
         let class_attr = link_class_attr(role_from_attrs(&u.attributes), u.text.is_empty());
         let target_attr = window_attrs(&u.attributes);
         write!(
             self.writer_mut(),
-            "<a href=\"{}\"{class_attr}{target_attr}>",
+            "<a href=\"{}\"{id_attr}{class_attr}{target_attr}>",
             escape_href(&target_str)
         )?;
         if u.text.is_empty() {
@@ -939,11 +1048,12 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             return Ok(());
         }
 
+        let id_attr = link_id_attr(&m.attributes);
         let class_attr = link_class_attr(role_from_attrs(&m.attributes), false);
         let target_attr = window_attrs(&m.attributes);
         write!(
             self.writer_mut(),
-            "<a href=\"{}\"{class_attr}{target_attr}>",
+            "<a href=\"{}\"{id_attr}{class_attr}{target_attr}>",
             escape_href(&target_str)
         )?;
         if m.text.is_empty() {
@@ -1030,6 +1140,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         options: &RenderOptions,
         subs: &[Substitution],
     ) -> Result<(), Error> {
+        let target = xref.target;
         if xref.text.is_empty() {
             // Resolve via the id -> reference map (sections + titled blocks):
             // xreflabel (from [[id,Custom Text]]) > caption style or target title >
@@ -1045,7 +1156,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             // the resolution guard both outlive the `&mut self` render calls.
             let processor = Rc::clone(&self.processor);
             let display = resolve_xref(
-                processor.references.get(xref.target),
+                processor.references.get(target),
                 xref,
                 &processor.xref_guard,
             );
@@ -1075,7 +1186,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
                 || options.toc_mode
                 || matches!(display, XrefDisplay::Nested(_)));
             if linked {
-                write!(self.writer_mut(), "<a href=\"#{}\">", xref.target)?;
+                write!(self.writer_mut(), "<a href=\"#{target}\">")?;
             }
             match display {
                 XrefDisplay::Title(inlines, _scope) | XrefDisplay::Label(inlines, _scope) => {
@@ -1115,8 +1226,12 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             return Ok(());
         }
 
-        if let Some((target, _)) = self.interdocument_xref(xref.target) {
-            write!(self.writer_mut(), "<a href=\"{}\">", escape_href(&target))?;
+        if let Some((external_target, _)) = self.interdocument_xref(target) {
+            write!(
+                self.writer_mut(),
+                "<a href=\"{}\">",
+                escape_href(&external_target)
+            )?;
             for inline in &xref.text {
                 self.render_inline_node(inline, options, subs)?;
             }
@@ -1124,7 +1239,7 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
             return Ok(());
         }
 
-        write!(self.writer_mut(), "<a href=\"#{}\">", xref.target)?;
+        write!(self.writer_mut(), "<a href=\"#{target}\">")?;
         for inline in &xref.text {
             self.render_inline_node(inline, options, subs)?;
         }
@@ -1301,13 +1416,11 @@ impl<W: Write> HtmlVisitor<'_, '_, W> {
         let mut visitor = HtmlVisitor::new(
             Vec::new(),
             Rc::clone(&self.processor),
-            catalog_options.clone(),
+            catalog_options,
             self.diagnostics.reborrow(),
         );
         visitor.current_subs = subs.to_vec();
-        for inline in inlines {
-            visitor.render_inline_node(inline, &catalog_options, subs)?;
-        }
+        visitor.visit_inline_nodes(inlines)?;
         let html = String::from_utf8(visitor.into_writer()).map_err(io::Error::other)?;
         Ok(IndexTermLabel {
             plain: InlineTextTransform::default().to_string(inlines),

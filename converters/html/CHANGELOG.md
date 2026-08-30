@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Abstract and example styled paragraphs now use their matching block
+  presentation in standard and semantic HTML. Their titles, captions, IDs,
+  anchors, roles, and inline formatting are preserved.
+- Admonitions, audio, video, callout lists, and collapsible examples now keep
+  block anchors and roles on their HTML wrappers. Semantic callout lists also
+  keep their titles.
+- Standalone output now emits escaped `description` and `keywords` metadata,
+  including explicitly empty values, when those document attributes are set.
+- Unsupported non-empty parser block and inline variants now produce structured
+  converter warnings instead of disappearing silently.
+- Title-based shorthand cross-references such as `<<Syntax Highlighting>>` now
+  link to the matching generated or explicit section ID, including when the
+  reference supplies custom text, matching Asciidoctor.
+- Explicit links, direct URL macros, and `mailto:` macros now preserve a named
+  `id` attribute on the rendered anchor. References before or after the link
+  target it and use the `[id]` fallback text, matching Asciidoctor.
+- Bibliography entries now show their bracketed default, custom, numeric, and
+  formatted reference labels in standard and semantic HTML. Automatic
+  citations show the same label and link to the entry, while explicit citation
+  text remains unbracketed. Passthrough labels follow Asciidoctor's distinct
+  entry and citation substitution behavior.
 - Figures, tables, examples, listings, and source blocks now honor caption
   labels at each block's source position. Custom and disabled captions,
   inner-first numbering, and changes made part-way through a document match
@@ -270,6 +291,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sections with a named `reftext` now link natural references and explicit IDs
+  with that display label in standard and semantic HTML. Their titles are not
+  retained as second natural aliases, and formatted labels keep their inline
+  markup, matching Asciidoctor.
+- Plain visible shorthand cross-references now match section titles containing
+  `pass:[...]` or `+...+` content. A shorthand target containing a passthrough
+  remains unresolved and displays its visible text in standard and semantic
+  HTML, matching Asciidoctor.
+- When `:compat-mode:` is active at a title-based shorthand cross-reference,
+  it links to its literal target and displays the bracketed unresolved
+  fallback. Source-order changes apply only to later references, and explicit
+  local IDs still link to the section title, matching Asciidoctor in standard
+  and semantic HTML.
+- Interdocument `xref:` macros no longer link to a same-named local section.
+  File and fragment targets continue to map to HTML output paths in standard
+  and semantic HTML, matching Asciidoctor.
 - Image, audio, video, and video poster targets honor `imagesdir`, normalize
   relative paths, and encode spaces as `%20`, matching Asciidoctor.
 - Link fallback text keeps `mailto:` for a `link:` target, escapes URL

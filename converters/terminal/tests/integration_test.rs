@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
-use acdc_converters_core::{Converter, Options as ConverterOptions};
+use acdc_converters_core::{
+    Converter, Diagnostics, Options as ConverterOptions, WarningSource, visitor::Visitor,
+};
 use acdc_converters_dev::output::remove_lines_trailing_whitespace;
-use acdc_converters_terminal::{Capabilities, Processor};
+use acdc_converters_terminal::{Capabilities, Processor, TerminalVisitor};
 use acdc_parser::{DocumentAttributes, Options as ParserOptions};
 
 type Error = Box<dyn std::error::Error>;
@@ -47,6 +49,29 @@ const OSC8_TERMINAL: Capabilities = Capabilities {
     unicode: true,
     osc8_links: true,
 };
+
+#[test]
+fn unhandled_parser_block_warning_is_structured() -> Result<(), Error> {
+    let parsed = acdc_parser::parse("Paragraph.\n", &ParserOptions::default())?;
+    let doc = parsed.document();
+    let block = doc.blocks.first().ok_or("missing test block")?;
+    let processor = Processor::new(ConverterOptions::default(), doc.attributes.clone());
+    let mut output = Vec::new();
+    let mut warnings = Vec::new();
+    let source = WarningSource::new("terminal");
+    let mut diagnostics = Diagnostics::new(&source, &mut warnings);
+    {
+        let mut visitor = TerminalVisitor::new(&mut output, processor, diagnostics.reborrow());
+        visitor.visit_unhandled_block(block)?;
+    }
+
+    assert!(output.is_empty());
+    let warning = warnings.first().ok_or("missing fallback warning")?;
+    assert_eq!(warning.source.converter, "terminal");
+    assert!(warning.message.contains("omitted from terminal output"));
+    assert!(warning.advice().is_some());
+    Ok(())
+}
 
 fn strip_terminal_sequences(input: &str) -> String {
     let mut output = String::new();
@@ -436,10 +461,7 @@ fn document_structure_keeps_revision_navigation_and_hidden_section_meaning() -> 
     for expected in [
         "Release v2.1",
         "I: Part One",
-        "1. First",
         "1.1. Hidden Heading",
-        "Unit 1. First",
-        "Unit 2. Second",
         "Early Index",
         "Index body.",
         "Hidden body.",
@@ -450,6 +472,8 @@ fn document_structure_keeps_revision_navigation_and_hidden_section_meaning() -> 
             "missing {expected:?} in {output:?}"
         );
     }
+    assert_eq!(plain.matches("Unit 1. First").count(), 2, "{output:?}");
+    assert_eq!(plain.matches("Unit 2. Second").count(), 2, "{output:?}");
     assert_eq!(plain.matches("Hidden Heading").count(), 2, "{output:?}");
 
     let (osc8, osc8_warnings) = render_terminal(input, 80, OSC8_TERMINAL)?;
@@ -462,11 +486,22 @@ fn document_structure_keeps_revision_navigation_and_hidden_section_meaning() -> 
 
 #[test]
 fn unset_chapter_signifier_keeps_only_the_chapter_number() -> Result<(), Error> {
-    let input = "= Guide\n:doctype: book\n:sectnums:\n:chapter-signifier!:\n\n== Start\n";
+    let input = "= Guide\n:doctype: book\n:toc:\n:sectnums:\n:chapter-signifier!:\n\n== Start\n";
     let (output, _) = render_terminal(input, 80, TEXT_TERMINAL)?;
+    let plain = strip_terminal_sequences(&output);
 
-    assert!(output.contains("1. Start"), "{output:?}");
-    assert!(!output.contains("Chapter 1."), "{output:?}");
+    assert_eq!(plain.matches("1. Start").count(), 2, "{output:?}");
+    assert!(!plain.contains("Chapter 1."), "{output:?}");
+    Ok(())
+}
+
+#[test]
+fn default_chapter_signifier_labels_heading_and_toc_entry() -> Result<(), Error> {
+    let input = "= Guide\n:doctype: book\n:toc:\n:sectnums:\n\n== Start\n";
+    let (output, _) = render_terminal(input, 80, TEXT_TERMINAL)?;
+    let plain = strip_terminal_sequences(&output);
+
+    assert_eq!(plain.matches("Chapter 1. Start").count(), 2, "{output:?}");
     Ok(())
 }
 

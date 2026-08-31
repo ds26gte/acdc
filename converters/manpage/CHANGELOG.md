@@ -16,6 +16,43 @@ Major revamp of the manpage converter to match asciidoctor output much more clos
 
 ### Added
 
+- UI labels, STEM fallback text, and link and media targets now keep hostile
+  roff characters literal. Explicit passthrough blocks remain backend-native
+  content. Inline roles without an exact portable presentation produce one
+  structured fallback warning per document.
+- Tables now honor frame and grid rules, proportional, percentage, and
+  content-determined column widths, explicit table width, `autowidth`, table
+  alignment, and cell vertical alignment using portable `tbl` output.
+  Unsupported row stripes, floats, and right alignment produce deduplicated
+  structured warnings with readable fallbacks.
+- Source and listing blocks, including styled paragraphs, now remove
+  language-appropriate or XML comment guards and render callout markers as
+  bold `(N)` labels that match their explanation lists.
+- `%notitle` sections now omit their heading while retaining their body and
+  cross-reference text.
+- `hide-uri-scheme` now removes the scheme from the visible text of URL,
+  `link:`, and automatic links without changing their destination.
+- Built-in inline and link roles now use portable roff fallbacks: `underline`
+  and `subtitle` use italics, `big` and `small` change the text size,
+  `line-through` uses `[deleted: ...]`, and `overline` uses
+  `[overlined: ...]`. ID-only spans and unknown or color roles keep their text
+  without adding unsupported presentation.
+- Unordered `[none]`, `[no-bullet]`, and `[unstyled]` lists now omit bullets;
+  ordered lists also support `[unnumbered]`. The `%reversed` option counts down
+  from the list length or an explicit `start`, without changing nested lists.
+- `[horizontal]`, `[qanda]`, `[ordered]`, and `[unordered]` description lists
+  now use distinct readable layouts.
+- Bibliography entries now show their reference labels. A valid final `[index]`
+  section renders an alphabetized catalog with nested terms and `see` and
+  `see-also` relationships.
+- Image fallbacks now show explicit or filename-derived alternative text and
+  preserve configured links. Audio and video blocks render titled static links,
+  including every video source and poster, and report one playback warning per
+  document.
+- Figure, table, example, and listing titles now use their parser-resolved
+  captions, including custom or disabled captions and source-order label
+  changes. Styled example, listing, and source paragraphs use the same caption
+  behavior as their delimited forms.
 - Title-based shorthand cross-references now resolve generated and explicit
   section IDs before selecting their displayed reference text.
 - Cross-references preserve formatted explicit text through supported nested
@@ -39,6 +76,9 @@ Major revamp of the manpage converter to match asciidoctor output much more clos
   `(C)`, `->`, `...`) literal instead of converting to roff special glyphs.
 - User-facing converter warnings are now collected in `ConversionResult` for
   recoverable manpage convention issues, including NAME/SYNOPSIS section order.
+- Unsupported parser block, delimited block, inline node, and inline macro
+  variants now emit structured manpage warnings with actionable advice instead
+  of disappearing through tracing or silent fallbacks.
 - **`[listing]` and `[source]` styled paragraphs** — paragraphs with `[listing]` or
   `[source,lang]` style now render as preformatted text (same as `[literal]`).
 

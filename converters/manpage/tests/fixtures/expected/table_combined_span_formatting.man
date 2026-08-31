@@ -35,12 +35,13 @@ table\-combined\-span\-formatting \- test combined table span formatting
 .SH "DESCRIPTION"
 .SS "Column defaults"
 .sp
-\fBDefaults follow source cells\fP
+\fBTable 1. Defaults follow source cells\fP
+.br
 .TS
 allbox tab(:);
-ct s lt
-^ ^ rt
-rt lt ct.
+cx s cx
+^ ^ cx
+rdx ltx cx.
 T{
 \fICombined \fBbold\fP Ada\fP
 T}:T{
@@ -58,10 +59,11 @@ Third \fIitalic\fP
 T}
 .TE
 .sp
-\fBDuplicates use each column\fP
+\fBTable 2. Duplicates use each column\fP
+.br
 .TS
 allbox tab(:);
-rt lt ct.
+rdx ltx cx.
 T{
 \fBRepeated \fBbold\fP Ada\fP
 T}:T{
@@ -73,16 +75,16 @@ T}
 .SS "Explicit span formats"
 .TS
 allbox tab(:);
-lt s lt
-^ ^ lt
-ct s lt
-^ ^ lt
-rt s lt
-^ ^ lt
-ct s lt
-^ ^ lt
-rt s lt
-^ ^ lt.
+ltx s ltx
+^ ^ ltx
+cx s ltx
+^ ^ ltx
+rdx s ltx
+^ ^ ltx
+ctx s ltx
+^ ^ ltx
+rx s ltx
+^ ^ ltx.
 T{
 \fBStrong \fIitalic\fP\fP
 T}:Beside strong
@@ -109,8 +111,8 @@ T}:Beside monospace
 .SS "AsciiDoc span"
 .TS
 allbox tab(:);
-rt s lt
-^ ^ lt.
+rdx s ltx
+^ ^ ltx.
 T{
 Paragraph in a combined cell..RS 0
 .IP \(bu 2

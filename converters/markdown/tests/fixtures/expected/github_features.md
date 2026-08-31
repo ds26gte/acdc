@@ -2,6 +2,7 @@
 
 This document tests GitHub Flavored Markdown specific features.
 
+<a id="_github_alerts"></a>
 ## GitHub Alerts
 
 Alerts are GitHub's native admonition syntax.
@@ -21,9 +22,10 @@ Alerts are GitHub's native admonition syntax.
 > [!CAUTION]
 > Exercise caution with this operation.
 
+<a id="_footnotes"></a>
 ## Footnotes
 
-GitHub supports footnotes using the `\[^1\]` syntax.
+GitHub supports footnotes using the `[^1]` syntax.
 
 Here is a simple footnote.[^1]
 
@@ -31,6 +33,7 @@ You can also use named footnotes.[^named]
 
 Multiple references to the same footnote work too.[^named]
 
+<a id="_combined_example"></a>
 ## Combined Example
 
 > [!NOTE]

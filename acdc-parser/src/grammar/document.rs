@@ -1499,12 +1499,40 @@ fn collect_link_references<'a>(
     collect_inline_references(state, text, refs, xrefs);
 }
 
+fn header_reference_title<'a>(header: &Header<'a>) -> Title<'a> {
+    let mut inlines = header.title.clone().into_inlines();
+    if let Some(subtitle) = &header.subtitle {
+        inlines.push(InlineNode::PlainText(Plain {
+            content: ": ",
+            location: header.location.clone(),
+            escaped: false,
+        }));
+        inlines.extend(subtitle.clone().into_inlines());
+    }
+    Title::new(inlines)
+}
+
+fn collect_metadata_references<'a>(
+    state: &mut ParserState<'a>,
+    metadata: &BlockMetadata<'a>,
+    refs: &mut HashMap<&'a str, Reference<'a>>,
+    xrefs: &mut Vec<CrossReferenceUse<'a>>,
+) {
+    if let Some(attribution) = &metadata.attribution {
+        collect_inline_references(state, attribution, refs, xrefs);
+    }
+    if let Some(citetitle) = &metadata.citetitle {
+        collect_inline_references(state, citetitle, refs, xrefs);
+    }
+}
+
 /// Walk the final document tree to (1) populate the cross-reference catalog `refs` with
 /// every anchor (block IDs, inline `[[id]]` anchors, formatted span IDs, and link IDs) and (2)
 /// collect every `<<id>>` / `xref:id[]` use for unresolved-reference checking and
-/// bibliography citation metadata. A target with no title is still registered (reference
-/// text `None`), so an `<<id>>` to it resolves to the literal `[id]` rather than being
-/// treated as unresolved. Top-level section IDs are seeded from `toc_entries`; this walk
+/// bibliography citation metadata. Titles and quote credits are part of this walk because
+/// converters render their inline content too. A target with no title is still registered
+/// (reference text `None`), so an `<<id>>` to it resolves to the literal `[id]` rather than
+/// being treated as unresolved. Top-level section IDs are seeded from `toc_entries`; this walk
 /// also catalogs nested-document sections that do not belong in the outer table of contents.
 fn collect_references<'a>(
     state: &mut ParserState<'a>,
@@ -1520,6 +1548,12 @@ fn collect_references<'a>(
                 .metadata()
                 .and_then(|metadata| metadata.caption.clone());
             insert_reference(state, refs, anchor, block.title().cloned(), caption);
+        }
+        if let Some(title) = block.title() {
+            collect_inline_references(state, title, refs, xrefs);
+        }
+        if let Some(metadata) = block.metadata() {
+            collect_metadata_references(state, metadata, refs, xrefs);
         }
 
         match block {
@@ -1764,6 +1798,10 @@ fn collect_inline_references<'a>(
                     automatic: xref.text.is_empty(),
                     resolve_natural_target: xref.resolve_natural_target,
                 });
+                collect_inline_references(state, &xref.text, refs, xrefs);
+            }
+            InlineNode::Macro(InlineMacro::Footnote(footnote)) => {
+                collect_inline_references(state, &footnote.content, refs, xrefs);
             }
             InlineNode::Macro(InlineMacro::Link(link)) => collect_link_references(
                 state,
@@ -2724,8 +2762,48 @@ peg::parser! {
             // anchors, and formatted span IDs). The same walk collects every
             // cross-reference so unresolved ones can be reported.
             let toc_entries = state.toc_entries.clone();
+            let header_has_anchor = header.as_ref().is_some_and(|header| {
+                header.metadata.id.is_some() || !header.metadata.anchors.is_empty()
+            });
             let mut references: HashMap<&str, Reference<'_>> =
-                HashMap::with_capacity(toc_entries.len());
+                HashMap::with_capacity(toc_entries.len() + usize::from(header_has_anchor));
+            let mut xrefs = Vec::new();
+            if let Some(header) = &header {
+                if let Some(anchor) = header
+                    .metadata
+                    .id
+                    .as_ref()
+                    .or_else(|| header.metadata.anchors.last())
+                {
+                    insert_reference(
+                        state,
+                        &mut references,
+                        anchor,
+                        Some(header_reference_title(header)),
+                        None,
+                    );
+                }
+                collect_inline_references(
+                    state,
+                    header.title.as_ref(),
+                    &mut references,
+                    &mut xrefs,
+                );
+                if let Some(subtitle) = &header.subtitle {
+                    collect_inline_references(
+                        state,
+                        subtitle.as_ref(),
+                        &mut references,
+                        &mut xrefs,
+                    );
+                }
+                collect_metadata_references(
+                    state,
+                    &header.metadata,
+                    &mut references,
+                    &mut xrefs,
+                );
+            }
             for entry in &toc_entries {
                 let xreflabel = parse_reference_label(state, entry.xreflabel, &entry.location);
                 references.insert(
@@ -2740,7 +2818,6 @@ peg::parser! {
                     },
                 );
             }
-            let mut xrefs = Vec::new();
             collect_references(state, &blocks, &mut references, &mut xrefs);
 
             let mut document = Document {
@@ -5370,14 +5447,20 @@ peg::parser! {
         // Parse first line (principal text)
         first_line:$((!(eol()) [_])*)
         // Parse continuation lines that are part of the same paragraph
-        // Stop at: list markers, blank lines, section headers, or block attributes
+        // Stop at list markers, explicit continuations, blank lines, section
+        // headers, or block attributes.
         continuation_lines:(
             eol()
-            !(whitespace()* (callout_list_marker() / unordered_list_marker() / ordered_list_marker() / section_level_marker() whitespace() / "[" / eol()))
+            !(whitespace()* (callout_list_marker() / unordered_list_marker() / ordered_list_marker() / section_level_marker() whitespace() / "[" / "+" whitespace()* eol() / eol()))
             line:$((!(eol()) [_])*)
             { line }
         )*
         first_line_end:position!()
+        explicit_continuations:(!at_list_separator() cont:(
+            list_explicit_continuation_immediate(offset, block_metadata)
+            / list_explicit_continuation_ancestor(offset, block_metadata)
+        ) { cont })*
+        list_dangling_continuation()?
         {
             // Combine first line and continuation lines
             let principal_text_owned = if continuation_lines.is_empty() {
@@ -5408,8 +5491,7 @@ peg::parser! {
                 principal
             };
 
-            // For callout lists, we don't support nested content or attached blocks
-            let blocks = vec![];
+            let blocks = explicit_continuations.into_iter().flatten().collect::<Vec<_>>();
 
             let location = state.create_location(span_start+offset, item_end+offset);
 
@@ -5422,12 +5504,14 @@ peg::parser! {
                 CalloutRef::explicit(number, location.clone())
             };
 
+            let actual_end = if blocks.is_empty() { item_end } else { span_end.saturating_sub(1) };
+
             Ok((CalloutListItem {
                 callout,
                 principal,
                 blocks,
-                location,
-            }, marker.to_string(), item_end))
+                location: state.create_location(span_start+offset, actual_end+offset),
+            }, marker.to_string(), actual_end))
         }
 
         rule checklist_item() -> ListItemCheckedStatus
@@ -5919,6 +6003,7 @@ peg::parser! {
             / eol() markdown_code_delimiter()
             / eol() comment_delimiter()
             / eol() open_delimiter() &(whitespace()* eol())
+            / eol() !not_after_verbatim_block() &(whitespace()* callout_list_marker() whitespace())
             / eol() list(start, offset, block_metadata)
             / eol() &("+" (whitespace() / eol() / ![_]))  // Stop at list continuation marker
             // `eol()*<2,>` (a real blank line), not `eol()*`: unlike a delimited
@@ -5933,7 +6018,13 @@ peg::parser! {
             ) [_]
         )+)
         {
-            // Reset the verbatim flag since paragraph is not a verbatim block
+            let is_styled_verbatim = matches!(
+                block_metadata.metadata.style,
+                Some("source" | "listing" | "literal")
+            );
+
+            // Reset the verbatim flag unless this paragraph establishes a new
+            // callout scope below.
             state.last_block_was_verbatim = false;
 
             // A `[comment]`-styled paragraph is a comment that produces no
@@ -5959,8 +6050,44 @@ peg::parser! {
                 return Ok(get_literal_paragraph(state, content, start, span_end, offset, block_metadata));
             }
 
-            let (content, _) =
-                process_inlines(state, block_metadata, content_start, span_end, offset, content)?;
+            let content = if is_styled_verbatim {
+                let content_location =
+                    state.create_block_location(content_start, span_end, offset);
+                let (verbatim_content, callouts) = resolve_verbatim_callouts(
+                    state,
+                    content,
+                    content_location,
+                    block_metadata
+                        .substitutions
+                        .enabled(&Substitution::Callouts),
+                );
+                let content = if callouts.is_empty() {
+                    process_inlines(
+                        state,
+                        block_metadata,
+                        content_start,
+                        span_end,
+                        offset,
+                        content,
+                    )?
+                    .0
+                } else {
+                    verbatim_content
+                };
+                state.last_block_was_verbatim = true;
+                state.last_verbatim_callouts = callouts;
+                content
+            } else {
+                process_inlines(
+                    state,
+                    block_metadata,
+                    content_start,
+                    span_end,
+                    offset,
+                    content,
+                )?
+                .0
+            };
 
             // Title should either be an attribute named title, or the title parsed from the block metadata
             let title: Title = if let Some(AttributeValue::String(title)) = block_metadata.metadata.attributes.get("title") {
@@ -8528,6 +8655,31 @@ link:https://example.net[Text,positional-id]
                 .any(|w| matches!(&w.kind, crate::WarningKind::UnresolvedReference { .. })),
             "a reference to an anchor inside a callout item must not warn"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_callout_item_explicit_continuation_attaches_block() -> Result<(), Error> {
+        let input = "----\nfirst <1>\nsecond <2>\n----\n<1> First explanation.\n+\nAttached paragraph.\n<2> Second explanation.\n";
+        let mut state = ParserState::new_for_test(input);
+        let doc = document_parser::document(input, &mut state)??;
+        let list = doc
+            .blocks
+            .iter()
+            .find_map(|block| {
+                if let Block::CalloutList(list) = block {
+                    Some(list)
+                } else {
+                    None
+                }
+            })
+            .expect("callout list must be parsed");
+
+        assert_eq!(list.items.len(), 2);
+        assert_eq!(list.items[0].blocks.len(), 1);
+        assert!(matches!(list.items[0].blocks[0], Block::Paragraph(_)));
+        assert!(list.items[1].blocks.is_empty());
+        assert!(state.warnings.borrow().is_empty());
         Ok(())
     }
 

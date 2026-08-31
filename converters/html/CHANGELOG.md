@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including explicitly empty values, when those document attributes are set.
 - Unsupported non-empty parser block and inline variants now produce structured
   converter warnings instead of disappearing silently.
+- Degraded HTML fallbacks now include actionable advice for unsupported docinfo
+  values, terminal preview and replay problems, excessive ordered-list depth,
+  highlighted-code parser variants, and the discouraged `max-width` attribute.
 - Title-based shorthand cross-references such as `<<Syntax Highlighting>>` now
   link to the matching generated or explicit section ID, including when the
   reference supplies custom text, matching Asciidoctor.
@@ -291,6 +294,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Numbered book chapters now honor a configured `chapter-signifier` in both
+  headings and TOC entries. An absent or unset signifier keeps the number-only
+  form, matching Asciidoctor HTML.
 - Sections with a named `reftext` now link natural references and explicit IDs
   with that display label in standard and semantic HTML. Their titles are not
   retained as second natural aliases, and formatted labels keep their inline

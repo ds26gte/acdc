@@ -1,14 +1,40 @@
 use std::path::{Path, PathBuf};
 
-use acdc_converters_core::{Converter, GeneratorMetadata, Options as ConverterOptions};
+use acdc_converters_core::{
+    Converter, Diagnostics, GeneratorMetadata, Options as ConverterOptions, WarningSource,
+    visitor::Visitor,
+};
 use acdc_converters_dev::output::remove_lines_trailing_whitespace;
-use acdc_converters_manpage::Processor;
+use acdc_converters_manpage::{ManpageVisitor, Processor};
 use acdc_parser::{DocumentAttributes, Options as ParserOptions};
 
 type Error = Box<dyn std::error::Error>;
 
 fn temp_output_path(name: &str, extension: &str) -> PathBuf {
     std::env::temp_dir().join(format!("acdc-{name}-{}.{extension}", std::process::id()))
+}
+
+#[test]
+fn unhandled_parser_block_warning_is_structured() -> Result<(), Error> {
+    let parsed = acdc_parser::parse("Paragraph.\n", &ParserOptions::default())?;
+    let doc = parsed.document();
+    let block = doc.blocks.first().ok_or("missing test block")?;
+    let processor = Processor::new(ConverterOptions::default(), doc.attributes.clone());
+    let mut output = Vec::new();
+    let mut warnings = Vec::new();
+    let source = WarningSource::new("manpage");
+    let mut diagnostics = Diagnostics::new(&source, &mut warnings);
+    {
+        let mut visitor = ManpageVisitor::new(&mut output, processor, diagnostics.reborrow());
+        visitor.visit_unhandled_block(block)?;
+    }
+
+    assert!(output.is_empty());
+    let warning = warnings.first().ok_or("missing fallback warning")?;
+    assert_eq!(warning.source.converter, "manpage");
+    assert!(warning.message.contains("omitted from manpage output"));
+    assert!(warning.advice().is_some());
+    Ok(())
 }
 
 fn run_manpage_fixture(path: &Path, expected_dir: &Path, embedded: bool) -> Result<(), Error> {
@@ -118,8 +144,162 @@ fn custom_name_section_title_is_not_out_of_order() -> Result<(), Error> {
 }
 
 #[test]
+fn static_media_playback_warning_is_deduplicated() -> Result<(), Error> {
+    let input = include_str!("fixtures/source/video_audio.adoc");
+    let parsed = acdc_parser::parse(input, &ParserOptions::default())?;
+    let doc = parsed.document();
+    let processor = Processor::new(ConverterOptions::default(), doc.attributes.clone());
+    let mut output = Vec::new();
+    let mut warnings = Vec::new();
+    let source = acdc_converters_core::WarningSource::new("manpage");
+    let mut diagnostics = acdc_converters_core::Diagnostics::new(&source, &mut warnings);
+
+    processor.write_to(doc, &mut output, None, None, &mut diagnostics)?;
+
+    assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+    let warning = warnings.first().ok_or("missing playback warning")?;
+    assert!(
+        warning
+            .message
+            .contains("audio and video playback are not available"),
+        "unexpected warning: {warnings:?}"
+    );
+    assert!(warning.advice().is_some(), "missing advice: {warnings:?}");
+    Ok(())
+}
+
+#[test]
+fn table_fallback_warnings_are_deduplicated() -> Result<(), Error> {
+    let input = r"= table-warnings(1)
+:doctype: manpage
+
+== NAME
+
+table-warnings - test table fallbacks
+
+== SYNOPSIS
+
+table-warnings
+
+== DESCRIPTION
+
+[stripes=odd,float=right]
+|===
+| one
+|===
+
+[stripes=even,float=right]
+|===
+| two
+|===
+
+[align=right]
+|===
+| three
+|===
+";
+    let parsed = acdc_parser::parse(input, &ParserOptions::default())?;
+    let doc = parsed.document();
+    let processor = Processor::new(ConverterOptions::default(), doc.attributes.clone());
+    let mut output = Vec::new();
+    let mut warnings = Vec::new();
+    let source = acdc_converters_core::WarningSource::new("manpage");
+    let mut diagnostics = acdc_converters_core::Diagnostics::new(&source, &mut warnings);
+
+    processor.write_to(doc, &mut output, None, None, &mut diagnostics)?;
+
+    assert_eq!(warnings.len(), 3, "unexpected warnings: {warnings:?}");
+    for expected in [
+        "table row stripes are not supported",
+        "table floats are not supported",
+        "right table alignment is not supported",
+    ] {
+        let warning = warnings
+            .iter()
+            .find(|warning| warning.message.contains(expected))
+            .ok_or_else(|| format!("missing warning containing {expected:?}: {warnings:?}"))?;
+        assert!(warning.advice().is_some(), "missing advice: {warning:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn inline_role_fallback_warning_is_deduplicated() -> Result<(), Error> {
+    let source_path = Path::new("tests/fixtures/source/sections_inline_roles.adoc");
+    let parsed = acdc_parser::parse_file(source_path, &ParserOptions::default())?;
+    let doc = parsed.document();
+    let processor = Processor::new(ConverterOptions::default(), doc.attributes.clone());
+    let mut output = Vec::new();
+    let mut warnings = Vec::new();
+    let source = acdc_converters_core::WarningSource::new("manpage");
+    let mut diagnostics = acdc_converters_core::Diagnostics::new(&source, &mut warnings);
+
+    processor.write_to(doc, &mut output, Some(source_path), None, &mut diagnostics)?;
+
+    assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+    let warning = warnings.first().ok_or("missing inline role warning")?;
+    assert!(
+        warning
+            .message
+            .contains("inline roles have no exact portable roff styling"),
+        "unexpected warning: {warning:?}"
+    );
+    assert!(warning.advice().is_some(), "missing advice: {warning:?}");
+    Ok(())
+}
+
+#[test]
 fn captioned_cross_references_honor_source_order_xrefstyle() -> Result<(), Error> {
-    let input = "= xrefstyle(1)\n:doctype: manpage\n:figure-caption: BeforeFigure\n:table-caption: BeforeTable\n\n== NAME\n\nxrefstyle - test captioned references\n\n== DESCRIPTION\n\n:xrefstyle: short\n\nForward short: <<figure-target>> and <<table-target>>.\n\n:xrefstyle: full\n\nForward full: <<figure-target>> and <<table-target>>.\n\n:figure-caption: TargetFigure\n:table-caption: TargetTable\n\n[[figure-target]]\n.A figure title\nimage::figure.svg[]\n\n[[table-target]]\n.A table title\n|===\n|Cell\n|===\n\n:figure-caption: AfterFigure\n:table-caption: AfterTable\n:xrefstyle: short\n\nBackward short: <<figure-target>> and <<table-target>>.\n\n:xrefstyle: full\n\nBackward full: <<figure-target>> and <<table-target>>.\n";
+    let input = r"= xrefstyle(1)
+:doctype: manpage
+:figure-caption: BeforeFigure
+:table-caption: BeforeTable
+
+== NAME
+
+xrefstyle - test captioned references
+
+== DESCRIPTION
+
+:xrefstyle: basic
+
+Forward basic: <<figure-target>> and <<table-target>>.
+
+:xrefstyle: short
+
+Forward short: <<figure-target>> and <<table-target>>.
+
+:xrefstyle: full
+
+Forward full: <<figure-target>> and <<table-target>>.
+
+:figure-caption: TargetFigure
+:table-caption: TargetTable
+
+[[figure-target]]
+.A figure title
+image::figure.svg[]
+
+[[table-target]]
+.A table title
+|===
+|Cell
+|===
+
+:figure-caption: AfterFigure
+:table-caption: AfterTable
+:xrefstyle: basic
+
+Backward basic: <<figure-target>> and <<table-target>>.
+
+:xrefstyle: short
+
+Backward short: <<figure-target>> and <<table-target>>.
+
+:xrefstyle: full
+
+Backward full: <<figure-target>> and <<table-target>>.
+";
     let parser_options = ParserOptions::with_attributes(DocumentAttributes::default());
     let parsed = acdc_parser::parse(input, &parser_options)?;
     let doc = parsed.document();
@@ -132,8 +312,12 @@ fn captioned_cross_references_honor_source_order_xrefstyle() -> Result<(), Error
     let output = String::from_utf8(output)?;
 
     for expected in [
+        "Forward basic: A figure title and A table title",
         "Forward short: TargetFigure 1 and BeforeTable 1",
         "Forward full: TargetFigure 1, \\(lqA figure title\\(rq and BeforeTable 1, \\(lqA table title\\(rq",
+        "\\fBTargetFigure 1. A figure title\\fP",
+        "\\fBTargetTable 1. A table title\\fP",
+        "Backward basic: A figure title and A table title",
         "Backward short: TargetFigure 1 and AfterTable 1",
         "Backward full: TargetFigure 1, \\(lqA figure title\\(rq and AfterTable 1, \\(lqA table title\\(rq",
     ] {

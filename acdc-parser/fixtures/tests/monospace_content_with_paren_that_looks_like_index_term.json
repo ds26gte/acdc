@@ -13,21 +13,6 @@
           "form": "constrained",
           "inlines": [
             {
-              "name": "text",
-              "type": "string",
-              "value": "(",
-              "location": [
-                {
-                  "line": 1,
-                  "col": 2
-                },
-                {
-                  "line": 1,
-                  "col": 2
-                }
-              ]
-            },
-            {
               "name": "indexterm",
               "type": "inline",
               "term": [
@@ -47,26 +32,11 @@
                   ]
                 }
               ],
-              "visible": true,
+              "visible": false,
               "location": [
                 {
                   "line": 1,
-                  "col": 3
-                },
-                {
-                  "line": 1,
-                  "col": 10
-                }
-              ]
-            },
-            {
-              "name": "text",
-              "type": "string",
-              "value": ")",
-              "location": [
-                {
-                  "line": 1,
-                  "col": 11
+                  "col": 2
                 },
                 {
                   "line": 1,

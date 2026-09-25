@@ -3,7 +3,7 @@ use crate::{
     CurvedQuotation, Footnote, Form, Highlight, ICON_SIZES, Icon, Image, IndexTerm, IndexTermKind,
     IndexTermRelationship, InlineMacro, InlineNode, Italic, Keyboard, LineBreak, Link, Mailto,
     Menu, Monospace, Pass, PassthroughKind, Plain, Source, StandaloneCurvedApostrophe, Stem,
-    StemNotation, Subscript, Substitution, Superscript, Url,
+    StemNotation, Subscript, Substitution, Superscript, Title, Url,
     grammar::{
         ParserState, inline_preprocessing,
         inline_preprocessor::InlinePreprocessorParserState,
@@ -12,12 +12,15 @@ use crate::{
     model::{strip_quotes, substitution::HEADER},
 };
 
-use super::helpers::{
-    BlockParsingMetadata, MacroAttributeContext, PositionWithOffset, RESERVED_NAMED_ATTRIBUTE_ID,
-    RESERVED_NAMED_ATTRIBUTE_OPTIONS, RESERVED_NAMED_ATTRIBUTE_ROLE, Shorthand,
-    is_valid_bibliography_id, process_attribute_list, strip_url_backslash_escapes,
+use super::{
+    helpers::{
+        BlockParsingMetadata, MacroAttributeContext, PositionWithOffset,
+        RESERVED_NAMED_ATTRIBUTE_ID, RESERVED_NAMED_ATTRIBUTE_OPTIONS,
+        RESERVED_NAMED_ATTRIBUTE_ROLE, Shorthand, is_valid_bibliography_id, process_attribute_list,
+        strip_url_backslash_escapes,
+    },
+    state::{InlineContext, InlineRules},
 };
-use super::state::{InlineContext, InlineRules};
 
 /// RFC 5321 max local-part length. An email address must have `@` within this
 /// many bytes of the start of the local part.
@@ -46,6 +49,39 @@ fn trimmed_index_term_segment(text: &str, start: usize) -> IndexTermSegment<'_> 
         text: trimmed_start.trim_end(),
         start: start + leading,
     }
+}
+
+fn split_index_term_relationship(
+    segment: IndexTermSegment<'_>,
+) -> (
+    IndexTermSegment<'_>,
+    Option<IndexTermRelationshipSegments<'_>>,
+) {
+    let segment = trimmed_index_term_segment(segment.text, segment.start);
+    if let Some((term, target)) = segment.text.split_once(" >> ") {
+        return (
+            trimmed_index_term_segment(term, segment.start),
+            Some(IndexTermRelationshipSegments::See(
+                trimmed_index_term_segment(target, segment.start + term.len() + 4),
+            )),
+        );
+    }
+    if let Some((term, targets)) = segment.text.split_once(" &> ") {
+        let mut start = segment.start + term.len() + 4;
+        let targets = targets
+            .split(" &> ")
+            .map(|target| {
+                let segment = trimmed_index_term_segment(target, start);
+                start += target.len() + 4;
+                segment
+            })
+            .collect();
+        return (
+            trimmed_index_term_segment(term, segment.start),
+            Some(IndexTermRelationshipSegments::SeeAlso(targets)),
+        );
+    }
+    (segment, None)
 }
 
 fn parse_index_term_inlines<'a>(
@@ -550,7 +586,7 @@ peg::parser! {
         // Double square brackets (anchors): [[...]]
         / "[[" inner:$((!"]]" [_])*) "]]" { state.intern_fmt(format_args!("[[{inner}]]")) }
         // Paired square brackets with prefix (macros): something[...]
-        / prefix:$([^('[' | ' ' | '\t' | '\n' | '\\')]+) "[" inner:$([^']']*) "]" { state.intern_fmt(format_args!("{prefix}[{inner}]")) }
+        / !literal_pass_macro() prefix:$([^('[' | ' ' | '\t' | '\n' | '\\')]+) "[" inner:$([^']']*) "]" { state.intern_fmt(format_args!("{prefix}[{inner}]")) }
         // Curly braces (attributes): {...}
         / "{" inner:$([^'}']*) "}" { state.intern_fmt(format_args!("{{{inner}}}")) }
         // Double parens (index terms): ((...))
@@ -582,11 +618,17 @@ peg::parser! {
         rule escaped_syntax_match() -> ()
         = "\\" "\\"? escapable_pattern_match()
 
+        rule literal_pass_macro()
+        = "pass:" {?
+            (!state.inline_ctx.substitutions.enabled(&Substitution::Macros))
+                .then_some(()).ok_or("macro substitutions enabled")
+        }
+
         /// Match escapable patterns without consuming
         rule escapable_pattern_match() -> ()
         = "<<" (!">>" [_])* ">>"
         / "[[" (!"]]" [_])* "]]"
-        / [^('[' | ' ' | '\t' | '\n' | '\\')]+ "[" [^']']* "]"
+        / !literal_pass_macro() [^('[' | ' ' | '\t' | '\n' | '\\')]+ "[" [^']']* "]"
         / "{" [^'}']* "}"
         / "((" (!"))" [_])* "))"
         // Unconstrained formatting: match entire span
@@ -739,11 +781,11 @@ peg::parser! {
         /// Only appears in the index, not in the text.
         /// Supports hierarchical entries with up to three levels.
         rule index_term_concealed() -> InlineNode<'input>
-        = "((("
-        terms:index_term_list()
-        relationship:index_term_shorthand_relationship()?
-        ")))"
+        = content:index_term_concealed_content()
         {?
+            let (content, relationship) = split_index_term_relationship(content);
+            let terms = index_term_list(content.text, state, content.start)
+                .map_err(|_| "could not parse index terms")?;
             let mut iter = terms.into_iter();
             let term = iter.next().unwrap_or(IndexTermSegment { text: "", start: span_start + 3 });
             let secondary = iter.next();
@@ -768,13 +810,9 @@ peg::parser! {
         /// Appears both in the text and in the index.
         /// Only supports a primary term.
         rule index_term_flow() -> InlineNode<'input>
-        = "(("
-        !("(")  // Ensure this is not the start of a concealed term
-        term:index_term_flow_segment()
-        whitespace()?
-        relationship:index_term_shorthand_relationship()?
-        "))"
+        = content:index_term_flow_content()
         {?
+            let (term, relationship) = split_index_term_relationship(content);
             tracing::debug!(term = %term.text, "Found flow index term");
             Ok(InlineNode::Macro(InlineMacro::IndexTerm(Box::new(IndexTerm {
                 kind: IndexTermKind::Flow(parse_index_term_inlines(state, term)?),
@@ -786,10 +824,10 @@ peg::parser! {
         /// indexterm macro: indexterm:[primary, secondary, tertiary]
         /// Concealed (hidden) form - same as (((primary, secondary, tertiary)))
         rule indexterm_macro() -> InlineNode<'input>
-        = "indexterm:["
-        items:index_term_macro_list()
-        "]"
+        = "indexterm:" content:index_term_macro_content()
         {?
+            let items = index_term_macro_list(content.text, state, content.start)
+                .map_err(|_| "could not parse index term attributes")?;
             let (terms, relationship) = partition_index_term_macro_items(items);
             let mut iter = terms.into_iter();
             let term = iter.next().unwrap_or(IndexTermSegment { text: "", start: span_start + "indexterm:[".len() });
@@ -814,15 +852,13 @@ peg::parser! {
         /// indexterm2 macro: indexterm2:[term]
         /// Flow (visible) form - same as ((term))
         rule indexterm2_macro() -> InlineNode<'input>
-        = "indexterm2:["
-        content_start:position!()
-        items:index_term_macro_list()
-        content_end:position!()
-        "]"
+        = "indexterm2:" content:index_term_macro_content()
         {?
+            let items = index_term_macro_list(content.text, state, content.start)
+                .map_err(|_| "could not parse index term attributes")?;
             let (terms, relationship) = partition_index_term_macro_items(items);
             let term = if relationship.is_none() {
-                trimmed_index_term_segment(&state.input[content_start..content_end], content_start)
+                trimmed_index_term_segment(content.text, content.start)
             } else {
                 terms.into_iter().next().unwrap_or(IndexTermSegment {
                     text: "",
@@ -837,76 +873,83 @@ peg::parser! {
             }))))
         }
 
-        rule index_term_macro_list() -> Vec<IndexTermMacroItem<'input>>
-        = items:(index_term_macro_item() ** ",") { items }
+        pub(crate) rule index_term_macro_list(base: usize) -> Vec<IndexTermMacroItem<'input>>
+        = items:(index_term_macro_item(base) ** ",") { items }
 
-        rule index_term_macro_item() -> IndexTermMacroItem<'input>
-        = whitespace()* "see-also" "=" targets:index_term_see_also_value() whitespace()* {
+        rule index_term_macro_item(base: usize) -> IndexTermMacroItem<'input>
+        = whitespace()* "see-also" "=" targets:index_term_see_also_value(base) whitespace()* {
             IndexTermMacroItem::Relationship(IndexTermRelationshipSegments::SeeAlso(targets))
         }
-        / whitespace()* "see" "=" target:index_term_relation_value() whitespace()* {
+        / whitespace()* "see" "=" target:index_term_relation_value(base) whitespace()* {
             IndexTermMacroItem::Relationship(IndexTermRelationshipSegments::See(target))
         }
-        / term:index_term_segment() { IndexTermMacroItem::Term(term) }
+        / term:index_term_segment(base) { IndexTermMacroItem::Term(term) }
 
-        rule index_term_relation_value() -> IndexTermSegment<'input>
-        = "\"" start:position!() content:$([^'"']*) "\"" {
-            trimmed_index_term_segment(content, start)
+        rule index_term_relation_value(base: usize) -> IndexTermSegment<'input>
+        = "\"" start:position!() content:$([^'"']*) "\"" &(whitespace()* ("," / ![_])) {
+            trimmed_index_term_segment(content, base + start)
         }
-        / start:position!() content:$([^(',' | ']')]*) {
-            trimmed_index_term_segment(content, start)
+        / start:position!() content:$([^',']*) {
+            trimmed_index_term_segment(content, base + start)
         }
 
-        rule index_term_see_also_value() -> Vec<IndexTermSegment<'input>>
-        = "\"" targets:(index_term_see_also_target() ** ",") "\"" { targets }
-        / target:index_term_relation_value() { vec![target] }
+        rule index_term_see_also_value(base: usize) -> Vec<IndexTermSegment<'input>>
+        = "\"" targets:(index_term_see_also_target(base) ** ",") "\"" &(whitespace()* ("," / ![_])) { targets }
+        / target:index_term_relation_value(base) { vec![target] }
 
-        rule index_term_see_also_target() -> IndexTermSegment<'input>
+        rule index_term_see_also_target(base: usize) -> IndexTermSegment<'input>
         = whitespace()* start:position!() content:$([^(',' | '"')]*) whitespace()* {
-            trimmed_index_term_segment(content, start)
+            trimmed_index_term_segment(content, base + start)
         }
 
         /// Parse comma-separated index term list with support for quoted segments
         /// e.g., "knight, Knight of the Round Table, Lancelot"
         /// or "knight, \"Arthur, King\"" (quoted segment with embedded comma)
-        rule index_term_list() -> Vec<IndexTermSegment<'input>>
-        = terms:(index_term_segment() ** ",") {
+        pub(crate) rule index_term_list(base: usize) -> Vec<IndexTermSegment<'input>>
+        = terms:(index_term_segment(base) ** ",") {
             terms.into_iter().filter(|segment| !segment.text.is_empty()).collect()
         }
 
         /// Parse a single index term segment, either quoted or unquoted
-        rule index_term_segment() -> IndexTermSegment<'input>
-        = whitespace()? segment:(index_term_quoted() / index_term_unquoted()) whitespace()? { segment }
+        rule index_term_segment(base: usize) -> IndexTermSegment<'input>
+        = whitespace()? segment:(index_term_quoted(base) / index_term_unquoted(base)) whitespace()? { segment }
 
-        /// Quoted segment: "term with, comma"
-        rule index_term_quoted() -> IndexTermSegment<'input>
-        = "\"" start:position!() content:$([^'"']*) "\"" { trimmed_index_term_segment(content, start) }
+        /// Quotes group commas; the macro delimiter can leave the quote unclosed.
+        rule index_term_quoted(base: usize) -> IndexTermSegment<'input>
+        = "\"" start:position!() content:$([^'"']*) "\""? &(whitespace()* ("," / ![_])) {
+            trimmed_index_term_segment(content, base + start)
+        }
 
         /// Unquoted segment: term without comma
-        rule index_term_unquoted() -> IndexTermSegment<'input>
-        = start:position!() content:$((!(" >> " / " &> ") [^('"' | ',' | ')' | ']')])+) {
-            trimmed_index_term_segment(content, start)
+        rule index_term_unquoted(base: usize) -> IndexTermSegment<'input>
+        = start:position!() content:$([^',']+) {
+            trimmed_index_term_segment(content, base + start)
         }
 
-        rule index_term_flow_segment() -> IndexTermSegment<'input>
-        = start:position!() content:$((!(" >> " / " &> " / "))") [_])+) {
-            trimmed_index_term_segment(content, start)
+        // Shorthand ends at a delimiter even inside quotes or nested parentheses.
+        rule index_term_shorthand_close() = "))" !")"
+        rule index_term_concealed_close() = ")" index_term_shorthand_close()
+
+        rule index_term_concealed_content() -> IndexTermSegment<'input>
+        = "(((" start:position!()
+          content:$((!(index_term_concealed_close() / index_term_shorthand_close()) [_])*)
+          index_term_concealed_close() {
+            IndexTermSegment { text: content, start }
         }
 
-        rule index_term_shorthand_relationship() -> IndexTermRelationshipSegments<'input>
-        = ">> " target:index_term_shorthand_see_target() {
-            IndexTermRelationshipSegments::See(target)
-        }
-        / "&> " targets:(index_term_shorthand_see_also_target() ** " &> ") {
-            IndexTermRelationshipSegments::SeeAlso(targets)
+        // An extra closing parenthesis remains outside a visible index term.
+        rule index_term_flow_close() = "))" !"))"
+
+        rule index_term_flow_content() -> IndexTermSegment<'input>
+        = "((" !"(" start:position!()
+          content:$((!index_term_flow_close() [_])+)
+          index_term_flow_close() {
+            IndexTermSegment { text: content, start }
         }
 
-        rule index_term_shorthand_see_target() -> IndexTermSegment<'input>
-        = start:position!() content:$([^')']+) { trimmed_index_term_segment(content, start) }
-
-        rule index_term_shorthand_see_also_target() -> IndexTermSegment<'input>
-        = start:position!() content:$((!(" &> ") [^')'])+) {
-            trimmed_index_term_segment(content, start)
+        rule index_term_macro_content() -> IndexTermSegment<'input>
+        = "[" start:position!() content:$(("\\]" / !"]" [_])+) "]" {
+            IndexTermSegment { text: content, start }
         }
 
         /// Match index term patterns without consuming (for negative lookahead in plain_text).
@@ -924,10 +967,9 @@ peg::parser! {
         /// monospace content). This call is inside a `!(...)` already, so any position
         /// change from actually matching is discarded regardless.
         rule index_term_match() -> ()
-        = index_term_concealed() {}  // Concealed: (((term)))
-        / index_term_flow() {}  // Flow: ((term))
-        / indexterm_macro() {}  // indexterm:[term]
-        / indexterm2_macro() {}  // indexterm2:[term]
+        = index_term_concealed_content() {}
+        / index_term_flow_content() {}
+        / ("indexterm:" / "indexterm2:") index_term_macro_content() {}
 
         rule inline_menu() -> InlineNode<'input>
         = check_experimental() "menu:"
@@ -1030,7 +1072,7 @@ peg::parser! {
                 target: target_source,
                 attributes: metadata.attributes.clone(),
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
-                hide_uri_scheme: state.document_attributes.is_set("hide-uri-scheme"),
+                hide_uri_scheme: state.document_attributes.contains_key("hide-uri-scheme"),
             })))
         }
 
@@ -1127,7 +1169,7 @@ peg::parser! {
         }
 
         rule check_experimental() -> ()
-        = {? if state.document_attributes.is_set("experimental") { Ok(()) } else { Err("experimental UI macros disabled") } }
+        = {? if state.document_attributes.contains_key("experimental") { Ok(()) } else { Err("experimental UI macros disabled") } }
 
         rule check_post_replacements() -> ()
         = {? if state.inline_ctx.substitutions.enabled(&Substitution::PostReplacements) { Ok(()) } else { Err("post_replacements disabled") } }
@@ -1171,7 +1213,7 @@ peg::parser! {
                 url: url_source,
                 bracketed,
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
-                hide_uri_scheme: state.document_attributes.is_set("hide-uri-scheme"),
+                hide_uri_scheme: state.document_attributes.contains_key("hide-uri-scheme"),
             })))
         }
 
@@ -1304,8 +1346,8 @@ peg::parser! {
                 "asciimath" => StemNotation::Asciimath,
                 _ => {
                     // stem:[] — resolve from :stem: document attribute
-                    match state.document_attributes.get_string("stem") {
-                        Some(s) => StemNotation::from_str(&s).unwrap_or(StemNotation::Asciimath),
+                    match state.document_attributes.text("stem") {
+                        Some(s) => StemNotation::from_str(s).unwrap_or(StemNotation::Asciimath),
                         _ => StemNotation::Asciimath,
                     }
                 }
@@ -1328,10 +1370,10 @@ peg::parser! {
         {?
             let (_discrete, metadata, title_position) = attributes;
             let mut metadata = metadata.clone();
-            let mut title = crate::Title::default();
+            let mut title = Title::default();
             if let Some(style) = metadata.style.take() {
                 // For inline images, the first positional attribute is the alt text (title)
-                title = crate::Title::new(vec![InlineNode::PlainText(Plain {
+                title = Title::new(vec![InlineNode::PlainText(Plain {
                     content: style,
                     location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
                     escaped: false,
@@ -1368,7 +1410,7 @@ peg::parser! {
                     process_inlines(state, &bm, title_start_pos.offset, title_end, state.inline_ctx.offset, content),
                     "could not process title in inline image macro"
                 )?;
-                title = crate::Title::new(title_inlines);
+                title = Title::new(title_inlines);
             }
             // Note: We do NOT remove the title attribute - it's needed for the HTML title attribute
 
@@ -1468,7 +1510,7 @@ peg::parser! {
                 target,
                 attributes: metadata.attributes.clone(),
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
-                hide_uri_scheme: state.document_attributes.is_set("hide-uri-scheme"),
+                hide_uri_scheme: state.document_attributes.contains_key("hide-uri-scheme"),
             })))
         }
 
@@ -1514,9 +1556,12 @@ peg::parser! {
             tracing::debug!(?target_str, ?text, "Found cross-reference shorthand");
             let location = state.create_block_location(span_start, span_end, state.inline_ctx.offset);
             let mut xref = crate::CrossReference::new(target_str, location).with_text(text);
-            xref.resolve_natural_target = !state.document_attributes.is_set("compat-mode");
+            xref.resolve_natural_target = !state.document_attributes.contains_key("compat-mode");
             xref.xrefstyle = crate::XrefStyle::from_attribute(
-                state.document_attributes.get_string("xrefstyle").as_deref(),
+                state
+                    .document_attributes
+                    .text("xrefstyle")
+                    .map(crate::strip_quotes),
             );
             if xref.text.is_empty() {
                 xref.caption_label_snapshot_id = Some(state.capture_xref_caption_labels());
@@ -1564,7 +1609,10 @@ peg::parser! {
             let location = state.create_block_location(span_start, span_end, state.inline_ctx.offset);
             let mut xref = crate::CrossReference::new(target_str, location).with_text(text);
             xref.xrefstyle = crate::XrefStyle::from_attribute(
-                state.document_attributes.get_string("xrefstyle").as_deref(),
+                state
+                    .document_attributes
+                    .text("xrefstyle")
+                    .map(crate::strip_quotes),
             );
             if xref.text.is_empty() {
                 xref.caption_label_snapshot_id = Some(state.capture_xref_caption_labels());
@@ -2233,12 +2281,12 @@ peg::parser! {
         )
 
         rule inline_anchor() -> InlineNode<'input>
-        = double_open_square_bracket()
+        = start:position!() double_open_square_bracket()
         // Whitespace is excluded - IDs must not contain spaces
         warn_anchor_id_with_whitespace()?
         id:$([^'\'' | ',' | ']' | '[' | ' ' | '\t' | '\n' | '\r']+)
         reftext:(
-            comma() reftext:$([^']']+) {
+            comma() reftext:anchor_reftext(start) {
                 Some(reftext)
             } /
             {
@@ -2253,12 +2301,28 @@ peg::parser! {
                 id: substituted_id,
                 xreflabel: substituted_reftext,
                 location: state.create_block_location(span_start, span_end, state.inline_ctx.offset),
+                bibliography_label: None,
                 bibliography: false,
             })
         }
 
         rule inline_anchor_match() -> ()
-        = double_open_square_bracket() [^'\'' | ',' | ']' | '[' | ' ' | '\t' | '\n' | '\r']+ (comma() [^']']+)? double_close_square_bracket()
+        = start:position!() double_open_square_bracket() [^'\'' | ',' | ']' | '[' | ' ' | '\t' | '\n' | '\r']+ (comma() anchor_reftext(start))? double_close_square_bracket()
+
+        rule bibliography_anchor_start(start: usize)
+        = {?
+            start.checked_sub(1)
+                .and_then(|offset| state.input.get(offset..start))
+                .filter(|previous| *previous == "[")
+                .map(|_| ())
+                .ok_or("not a bibliography anchor")
+        }
+
+        rule anchor_reftext(start: usize) -> &'input str
+        // Reserve the last three closing brackets for the bibliography delimiter.
+        = bibliography_anchor_start(start)
+          label:$((!("]]]" !"]") [^'\n' | '\r'])+) { label }
+        / !bibliography_anchor_start(start) label:$([^']']+) { label }
 
         rule invalid_bibliography_anchor() -> InlineNode<'input>
         = syntax:$("[[[" [^']' | '\n']* "]]]") {?
